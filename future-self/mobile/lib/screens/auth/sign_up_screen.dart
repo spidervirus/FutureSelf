@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class SignUpScreen extends StatefulWidget {
-  const SignUpScreen({Key? key}) : super(key: key);
+  const SignUpScreen({super.key});
 
   @override
-  _SignUpScreenState createState() => _SignUpScreenState();
+  SignUpScreenState createState() => SignUpScreenState(); // Made public
 }
 
-class _SignUpScreenState extends State<SignUpScreen> {
+class SignUpScreenState extends State<SignUpScreen> { // Made public
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;
@@ -24,20 +24,29 @@ class _SignUpScreenState extends State<SignUpScreen> {
         email: email,
         password: password,
       );
+      
+      if (!mounted) return; // Check if widget is still mounted
+      
       // Navigate to the user onboarding screen
       Navigator.of(context).pushReplacementNamed('/onboarding');
     } on AuthException catch (e) {
+      if (!mounted) return; // Check if widget is still mounted
+      
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.message)),
       );
     } catch (e) {
+      if (!mounted) return; // Check if widget is still mounted
+      
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('An unexpected error occurred')),
       );
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) { // Check if widget is still mounted
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -91,4 +100,4 @@ class _SignUpScreenState extends State<SignUpScreen> {
       ),
     );
   }
-} 
+}

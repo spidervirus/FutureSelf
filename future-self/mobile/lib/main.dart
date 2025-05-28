@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:future_self/screens/auth/sign_in_screen.dart';
-import 'package:future_self/screens/auth/sign_up_screen.dart';
-import 'package:future_self/screens/home_screen.dart';
-import 'package:future_self/screens/user_onboarding_screen.dart';
-import 'package:future_self/screens/chat_screen.dart';
+import 'screens/auth/sign_in_screen.dart';
+import 'screens/auth/sign_up_screen.dart';
+import 'screens/home_screen.dart';
+import 'screens/user_onboarding_screen.dart';
+import 'screens/chat_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized(); // Ensure widgets are initialized
@@ -40,7 +40,7 @@ class MyApp extends StatelessWidget {
 }
 
 class AuthGate extends StatefulWidget {
-  const AuthGate({Key? key}) : super(key: key);
+  const AuthGate({super.key});
 
   @override
   State<AuthGate> createState() => _AuthGateState();
@@ -60,8 +60,10 @@ class _AuthGateState extends State<AuthGate> {
             .from('users')
             .select('id')
             .eq('id', user.id)
-            .singleOrNull();
+            .maybeSingle();
 
+        if (!mounted) return; // Check if widget is still mounted
+        
         if (userData == null) {
           // User is signed in but onboarding not completed
           Navigator.of(context).pushReplacementNamed('/onboarding');
@@ -70,6 +72,7 @@ class _AuthGateState extends State<AuthGate> {
           Navigator.of(context).pushReplacementNamed('/home');
         }
       } else if (event == AuthChangeEvent.signedOut) {
+        if (!mounted) return; // Check if widget is still mounted
         // Navigate to the sign in screen when signed out
         Navigator.of(context).pushReplacementNamed('/signIn');
       }
@@ -83,12 +86,12 @@ class _AuthGateState extends State<AuthGate> {
 
     if (session != null) {
       // User is signed in, check onboarding status
-      return FutureBuilder<List<Map<String, dynamic>>?>( // Use FutureBuilder to wait for user data check
+      return FutureBuilder<Map<String, dynamic>?>(
         future: Supabase.instance.client
             .from('users')
             .select('id')
             .eq('id', session.user.id)
-            .singleOrNull(),
+            .maybeSingle(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             // Show a loading indicator while checking onboarding status

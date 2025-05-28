@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; // Import Supabase
 
 class UserOnboardingScreen extends StatefulWidget {
-  const UserOnboardingScreen({Key? key}) : super(key: key);
+  const UserOnboardingScreen({super.key});
 
   @override
-  _UserOnboardingScreenState createState() => _UserOnboardingScreenState();
+  UserOnboardingScreenState createState() => UserOnboardingScreenState(); // Make public
 }
 
-class _UserOnboardingScreenState extends State<UserOnboardingScreen> {
+class UserOnboardingScreenState extends State<UserOnboardingScreen> { // Make public
   final _nameController = TextEditingController();
   final _futureSelfDescriptionController = TextEditingController();
   final _preferredToneController = TextEditingController();
@@ -28,57 +28,52 @@ class _UserOnboardingScreenState extends State<UserOnboardingScreen> {
     setState(() {
       _isLoading = true;
     });
-
-    final user = Supabase.instance.client.auth.currentUser; // Get the current user
-
-    if (user == null) {
-      // Handle the case where the user is not signed in (shouldn't happen if AuthGate works)
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('User not authenticated.')),
-      );
-      setState(() {
-        _isLoading = false;
-      });
-      return;
-    }
-
     try {
-      // Prepare data for insertion into the 'users' table
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) {
+        throw Exception('User not authenticated');
+      }
+  
+      // Combine the three goals into a single string
+      final topGoals = [
+        _goal1Controller.text,
+        _goal2Controller.text,
+        _goal3Controller.text,
+      ].where((goal) => goal.isNotEmpty).join(', ');
+  
       final userData = {
-        'id': user.id, // Use the Supabase Auth user ID
+        'id': user.id,
         'name': _nameController.text,
-        'preferred_communication': _preferredCommunication,
-        'future_self_description': { // Store as JSONB
-          'description': _futureSelfDescriptionController.text,
-          // You can add more structured fields here later (e.g., career, relationships)
-        },
-        'future_self_age_years': _futureSelfAge, // Ensure age is selected
-        'top_goals': [
-          _goal1Controller.text,
-          _goal2Controller.text,
-          _goal3Controller.text,
-        ].where((goal) => goal.isNotEmpty).toList(), // Filter out empty goals
+        'preferred_communication_method': _preferredCommunication, // Fixed: was _selectedCommunicationMethod
+        'future_self_description': _futureSelfDescriptionController.text,
+        'future_self_age': _futureSelfAge ?? 0, // Fixed: was _futureSelfAgeController.text
+        'top_goals': topGoals, // Fixed: was _topGoalsController.text
         'preferred_tone': _preferredToneController.text,
       };
-
+  
       // Insert data into the 'users' table. Use upsert to handle cases where a user might somehow revisit this screen.
       await Supabase.instance.client
           .from('users')
           .upsert([userData]);
-
+  
+      if (!mounted) return; // Check if widget is still mounted
+      
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Onboarding data saved successfully!')),
       );
       // Navigate to the Home screen after successful onboarding
       Navigator.of(context).pushReplacementNamed('/home');
     } catch (error) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error saving onboarding data: ${error.toString()}')),
       );
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -186,9 +181,28 @@ class _UserOnboardingScreenState extends State<UserOnboardingScreen> {
                   ),
                    const SizedBox(height: 16.0),
                    Text('Preferred Communication Tone:', style: Theme.of(context).textTheme.titleMedium),
-                   TextFormField(
-                    controller: _preferredToneController,
-                    decoration: const InputDecoration(labelText: 'e.g., gentle, loving, spiritual'),
+                   DropdownButtonFormField<String>(
+                    value: _preferredToneController.text.isEmpty ? null : _preferredToneController.text,
+                    hint: const Text('Select tone'),
+                    items: _toneOptions.map((String tone) {
+                      return DropdownMenuItem<String>(
+                        value: tone,
+                        child: Text(tone),
+                      );
+                    }).toList(),
+                    onChanged: (String? newValue) {
+                      if (newValue != null) {
+                        setState(() {
+                          _preferredToneController.text = newValue;
+                        });
+                      }
+                    },
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please select a tone';
+                      }
+                      return null;
+                    },
                   ),
                   const SizedBox(height: 24.0),
                   Center(
@@ -204,4 +218,4 @@ class _UserOnboardingScreenState extends State<UserOnboardingScreen> {
             ),
     );
   }
-} 
+}

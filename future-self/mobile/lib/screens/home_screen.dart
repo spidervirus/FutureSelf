@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({Key? key}) : super(key: key);
+  const HomeScreen({super.key});
 
   @override
-  _HomeScreenState createState() => _HomeScreenState();
+  HomeScreenState createState() => HomeScreenState(); // Make public
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class HomeScreenState extends State<HomeScreen> { // Make public
   String? _userName;
   String? _dailyMessage;
   List<String>? _reflectionQuestions;
@@ -51,7 +51,7 @@ class _HomeScreenState extends State<HomeScreen> {
           .eq('user_id', user.id)
           .order('message_date', ascending: false)
           .limit(1)
-          .singleOrNull();
+          .maybeSingle();
 
       _dailyMessage = dailyMessageData?['message_content'] as String?;
       _reflectionQuestions = (dailyMessageData?['reflection_questions'] as List?)?.map((item) => item as String).toList();
@@ -69,6 +69,7 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       await Supabase.instance.client.auth.signOut();
     } catch (error) {
+      if (!mounted) return; // Check if widget is still mounted
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error signing out: ${error.toString()}')),
       );
@@ -205,4 +206,4 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
     );
   }
-} 
+}
