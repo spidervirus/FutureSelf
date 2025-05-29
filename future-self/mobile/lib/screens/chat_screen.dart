@@ -53,13 +53,13 @@ class ChatScreenState extends State<ChatScreen> {
         
         final response = await supabase
             .from('users')
-            .select('preferred_communication_method')
+            .select('preferred_communication')
             .eq('id', user.id)
             .single();
         
         if (mounted) {
           setState(() {
-            _preferredCommunicationMethod = response['preferred_communication_method'] ?? 'chat';
+            _preferredCommunicationMethod = response['preferred_communication'] ?? 'chat';
             _isLoadingPreferences = false;
           });
         }
@@ -176,7 +176,7 @@ class ChatScreenState extends State<ChatScreen> {
           },
           body: jsonEncode(<String, String>{
             'message': text,
-            'user_id': user.id,
+            'user_id': user.id, // Ensure user.id is passed
           }),
         );
 
@@ -665,7 +665,7 @@ class ChatScreenState extends State<ChatScreen> {
               // Save preference to Supabase
               final user = supabase.auth.currentUser;
               if (user != null) {
-                await supabase.from('users').update({'preferred_communication_method': newMethod}).eq('id', user.id);
+                await supabase.from('users').update({'preferred_communication': newMethod}).eq('id', user.id);
               }
             },
           ),

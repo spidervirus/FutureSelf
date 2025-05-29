@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Body, HTTPException, File, UploadFile, Request # Import Request
+from fastapi import FastAPI, Body, HTTPException, File, UploadFile, Request, Query # Import Request and Query
 from pydantic import BaseModel
 import requests # Import requests for calling Ollama
 import os # Import os to read environment variables
@@ -7,14 +7,168 @@ from postgrest.exceptions import APIError # Import specific Supabase exceptions
 from fastapi.middleware.cors import CORSMiddleware # Import CORSMiddleware
 import whisper # Import OpenAI's Whisper library
 from TTS.api import TTS # Import Coqui TTS library
-import tempfile # To handle temporary audio files
-import shutil # To save uploaded file to a temporary file (though not strictly needed for raw data now)
+import shutil # To save uploaded file to a temporary file
 import base64 # To encode audio to base64
-import wave # Import wave for WAV file handling
-import struct # Import struct for packing binary data
-from io import BytesIO # To work with bytes in memory
-import pyogg # Import pyogg for Opus decoding
-import subprocess # Import subprocess to run FFmpeg
+import asyncio # Import asyncio for async subprocess
+import uuid # Import uuid for unique file names
+from typing import Optional # Import Optional for type hints
+import re
+import numpy as np
+import spacy
+import librosa
+from dotenv import load_dotenv # Ensure this is imported if not already
+
+# --- Load environment variables ---
+load_dotenv() # Call it early
+
+# --- Opus Configuration ---
+# Parameters for Opus encoding/decoding
+OPUS_SAMPLE_RATE = 48000 # Hz (Typical for Opus, though not directly used in current ffmpeg commands for encoding)
+OPUS_NUM_CHANNELS = 1    # Mono (Typical for voice, though not directly used)
+OPUS_FRAME_SIZE_MS = 20  # Milliseconds, a common frame size for Opus encoding via FFmpeg
+
+# --- Initialize spaCy model --- 
+# This should be done once at application startup.
+NLP_MODEL_NAME = "en_core_web_sm"
+try:
+    nlp = spacy.load(NLP_MODEL_NAME)
+    print(f"spaCy model '{NLP_MODEL_NAME}' loaded successfully.")
+except OSError:
+    print(f"spaCy model '{NLP_MODEL_NAME}' not found. Downloading...")
+    try:
+        spacy.cli.download(NLP_MODEL_NAME)
+        nlp = spacy.load(NLP_MODEL_NAME)
+        print(f"spaCy model '{NLP_MODEL_NAME}' downloaded and loaded successfully.")
+    except Exception as e:
+        print(f"Error downloading or loading spaCy model '{NLP_MODEL_NAME}': {e}")
+        nlp = None # Handle case where model loading fails
+
+# --- Style Analyzer Functions --- 
+def analyze_text_style(text: str):
+    if not nlp or not text:
+        return {
+            "avg_sentence_length": None,
+            "emoji_frequency": None,
+            "common_emojis": [],
+            "common_slang": [],
+            "formality_score": None,
+        }
+    doc = nlp(text)
+
+    sentences = list(doc.sents)
+    avg_sentence_length = np.mean([len(sent) for sent in sentences]) if sentences else 0
+
+    emojis = re.findall(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]', text)
+    emoji_frequency = len(emojis) / len(doc) if len(doc) > 0 else 0
+    common_emojis = list(set(emojis))
+
+    # Basic slang detection (example)
+    slang_terms = [token.text.lower() for token in doc if token.text.lower() in ["lol", "brb", "omg", "btw", "imo", "thx", "np"]]
+
+    num_contractions = len([token for token in doc if "'" in token.text and token.pos_ not in ['PUNCT', 'SYM']])
+    # Heuristic: more contractions might mean less formal. Normalize by number of tokens.
+    # This is a very rough heuristic.
+    formality_score = 1.0 - (num_contractions / len(doc)) if len(doc) > 0 else 0.5 
+
+    return {
+        "avg_sentence_length": round(float(avg_sentence_length), 2) if avg_sentence_length is not None else None,
+        "emoji_frequency": round(float(emoji_frequency), 3) if emoji_frequency is not None else None,
+        "common_emojis": common_emojis[:5],
+        "common_slang": list(set(slang_terms))[:5],
+        "formality_score": round(float(formality_score), 2) if formality_score is not None else None,
+    }
+
+def analyze_voice_style(audio_file_path: str):
+    try:
+        y, sr = librosa.load(audio_file_path, sr=None) # Load with original sample rate
+
+        f0, _, _ = librosa.pyin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+        avg_pitch = np.nanmean(f0) if f0 is not None and len(f0[~np.isnan(f0)]) > 0 else None
+
+        rms_energy = np.mean(librosa.feature.rms(y=y))
+        
+        # Placeholder for speaking rate - ideally calculated using word count from STT and duration
+        # duration = librosa.get_duration(y=y, sr=sr)
+        # speaking_rate = (word_count / duration) * 60 if duration > 0 else None # Words per minute
+
+        return {
+            "avg_pitch": round(float(avg_pitch), 2) if avg_pitch is not None else None,
+            "voice_energy": round(float(rms_energy), 4) if rms_energy is not None else None,
+            # "speaking_rate": round(float(speaking_rate), 2) if speaking_rate is not None else None,
+        }
+    except Exception as e:
+        print(f"Error analyzing voice style from {audio_file_path}: {e}")
+        return {
+            "avg_pitch": None,
+            "voice_energy": None,
+            # "speaking_rate": None,
+        }
+
+# --- Helper function to get or create user style profile --- #
+async def get_or_create_user_style_profile(user_id: str, supabase_client: Client) -> dict:
+    try:
+        # Try to fetch existing profile
+        profile_response = supabase_client.table("user_style_profiles").select("*").eq("user_id", user_id).execute()
+
+        if profile_response.data and not profile_response.error:
+            return profile_response.data[0]
+        # Check for specific error indicating resource not found, or if there's any error and no data
+        elif profile_response.error:
+            # Attempt to access error details safely
+            error_code = getattr(profile_response.error, 'code', None)
+            error_message_detail = getattr(profile_response.error, 'message', str(profile_response.error))
+
+            if error_code == "PGRST116": # Resource not found
+                print(f"No style profile found for user {user_id} (PGRST116), creating default.")
+            else:
+                print(f"Error fetching style profile for user {user_id}: {error_message_detail} (Code: {error_code})")
+            
+            # Proceed to create a default profile if not found or other fetch error
+            default_profile_data = {
+                "user_id": user_id,
+                "avg_sentence_length": None,
+                "emoji_frequency": None,
+                "formality_score": None,
+                "avg_pitch": None,
+                "voice_energy": None,
+            }
+            inserted_response = supabase_client.table("user_style_profiles").insert(default_profile_data).execute()
+            
+            if inserted_response.data and not inserted_response.error:
+                return inserted_response.data[0]
+            else:
+                insert_error_message = "Failed to create default profile."
+                if inserted_response.error:
+                    insert_error_detail = getattr(inserted_response.error, 'message', str(inserted_response.error))
+                    insert_error_code = getattr(inserted_response.error, 'code', None)
+                    insert_error_message = f"Failed to create default profile: {insert_error_detail} (Code: {insert_error_code})"
+                print(f"Error creating default style profile for user {user_id}: {insert_error_message}")
+                return default_profile_data # Return defaults if creation fails
+        else: # No data and no error reported (should be rare, but handle defensively)
+            print(f"No style profile data for user {user_id} and no error reported, creating default.")
+            # (Duplicate of creation logic - consider refactoring)
+            default_profile_data = {
+                "user_id": user_id, "avg_sentence_length": None, "emoji_frequency": None, "formality_score": None, "avg_pitch": None, "voice_energy": None
+            }
+            inserted_response_fallback = supabase_client.table("user_style_profiles").insert(default_profile_data).execute()
+            if inserted_response_fallback.data and not inserted_response_fallback.error:
+                return inserted_response_fallback.data[0]
+            else:
+                fallback_error_msg = "Fallback profile creation failed."
+                if inserted_response_fallback.error:
+                    fallback_error_detail = getattr(inserted_response_fallback.error, 'message', str(inserted_response_fallback.error))
+                    fallback_error_msg = f"Fallback profile creation failed: {fallback_error_detail}"
+                print(f"Error creating default style profile (fallback path) for user {user_id}: {fallback_error_msg}")
+                return default_profile_data
+
+    except Exception as e:
+        print(f"Error in get_or_create_user_style_profile for user {user_id}: {e}")
+        # Return a default structure on error to prevent crashes downstream
+        return {
+            "user_id": user_id, "avg_sentence_length": None, "emoji_frequency": None, 
+            "common_emojis": [], "common_slang": [], "formality_score": None, 
+            "avg_pitch": None, "voice_energy": None
+        }
 
 app = FastAPI()
 
@@ -22,7 +176,7 @@ app = FastAPI()
 origins = [
     "http://localhost",
     "http://localhost:*", # Allow any port for localhost during development
-    "http://localhost:53739", # Explicitly allow the Flutter web app origin
+    "http://localhost:50349", # Explicitly allow the Flutter web app origin
 ]
 
 app.add_middleware(
@@ -48,6 +202,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 class ChatMessageRequest(BaseModel):
     message: str
     user_id: str
+    conversation_id: str | None = None # Added optional conversation_id
 
 class ChatMessageResponse(BaseModel):
     response: str
@@ -57,12 +212,13 @@ class TranscriptionResponse(BaseModel):
 
 class SynthesisRequest(BaseModel):
     text: str
+    user_id: str # Added user_id
     # Potentially add parameters for voice, speed, etc.
 
 class SynthesisResponse(BaseModel):
     audio_content: str # Base64 encoded audio content
 
-# --- Initialize Whisper Model ---
+# --- Initialize OpenAI Whisper Model ---
 # You might want to load a smaller model like "base" or "small" depending on your resources
 # The first time you run this, the model will be downloaded.
 # whisper_model_size = "base"
@@ -115,211 +271,280 @@ except Exception as e:
 async def read_root():
     return {'message': 'Future Self Backend is running!'}
 
-@app.post('/chat')
+@app.post('/chat', response_model=ChatMessageResponse)
 async def chat_endpoint(request: ChatMessageRequest = Body(...)):
-    print(f"Received message from user {request.user_id}: {request.message}")
+    user_id = request.user_id
+    user_message = request.message
 
-    user_preferences = None
+    # 1. Analyze user's text style
+    text_style_features = analyze_text_style(user_message)
+
+    # 2. Get or create user's style profile
+    user_profile = await get_or_create_user_style_profile(user_id, supabase)
+
+    # 3. Update style profile with new text features (consider averaging or a more sophisticated update)
+    # For simplicity, we'll update with the latest analysis. You might want to average over time.
+    update_data = {
+        "avg_sentence_length": text_style_features.get("avg_sentence_length") if text_style_features.get("avg_sentence_length") is not None else user_profile.get("avg_sentence_length"),
+        "emoji_frequency": text_style_features.get("emoji_frequency") if text_style_features.get("emoji_frequency") is not None else user_profile.get("emoji_frequency"),
+        "common_emojis": text_style_features.get("common_emojis") if text_style_features.get("common_emojis") else user_profile.get("common_emojis", []),
+        "common_slang": text_style_features.get("common_slang") if text_style_features.get("common_slang") else user_profile.get("common_slang", []),
+        "formality_score": text_style_features.get("formality_score") if text_style_features.get("formality_score") is not None else user_profile.get("formality_score"),
+    }
+
     try:
-        # 1. Fetch user preferences from Supabase
-        query = supabase.from_('users').select('future_self_description, top_goals, preferred_tone, future_self_age_years').eq('id', request.user_id).single()
-        response = query.execute()
-        user_preferences = response.data
-
+        supabase.table("user_style_profiles").update(update_data).eq("user_id", user_id).execute()
+        print(f"Successfully updated style profile for user {user_id}")
     except APIError as e:
-         if e.code == 'PGRST116': # This code indicates a single row was expected but none found
-             raise HTTPException(status_code=404, detail=f"User preferences not found for user_id: {request.user_id}.")
-         else:
-             print(f"Supabase API error: {e}")
-             raise HTTPException(status_code=500, detail=f"Error fetching user data from Supabase: {e}")
+        print(f"Error updating style profile for user {user_id}: {e.message}")
+        # Continue even if profile update fails, but log it
     except Exception as e:
-        print(f"Error fetching user data from Supabase: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching user data: {e}")
+        print(f"An unexpected error occurred updating style profile for user {user_id}: {e}")
 
-    if not user_preferences:
-         # This case should ideally be caught by the PostgrestAPIError above, but as a fallback:
-         raise HTTPException(status_code=404, detail=f"User preferences data is empty for user_id: {request.user_id}.")
+    # Refresh profile after update to ensure we use the latest for the prompt
+    user_profile = await get_or_create_user_style_profile(user_id, supabase) # Re-fetch or merge update_data into user_profile
 
+    # 4. Construct the prompt for Ollama, incorporating style
+    # Base prompt - can be further refined
+    prompt_template = (
+        "You are an AI assistant embodying the user's 'Future Self'. "
+        "Your goal is to communicate in a way that reflects the user's current communication style, "
+        "blended with aspirational qualities. Analyze the user's message and the provided style profile "
+        "to guide your response. Be supportive, insightful, and slightly aspirational.\n\n"
+        "User's Current Style Profile:\n"
+        "- Average Sentence Length: {avg_sentence_length}\n"
+        "- Emoji Frequency: {emoji_frequency} (0=none, 1=high)\n"
+        "- Common Emojis: {common_emojis}\n"
+        "- Common Slang/Informal: {common_slang}\n"
+        "- Formality Score: {formality_score} (0=very informal, 1=very formal)\n"
+        "- Average Pitch (from voice, if available): {avg_pitch}\n"
+        "- Voice Energy (from voice, if available): {voice_energy}\n\n"
+        "Aspirational Qualities to gently weave in: Clarity, confidence, wisdom, positivity.\n\n"
+        "User's message: '{user_message}'\n\n"
+        "Future Self AI, respond to the user, subtly mimicking their style while embodying their future self:")
+
+    # Fill the prompt template with style data
+    # Use defaults if some profile attributes are None
+    prompt = prompt_template.format(
+        avg_sentence_length=user_profile.get("avg_sentence_length", "N/A"),
+        emoji_frequency=user_profile.get("emoji_frequency", "N/A"),
+        common_emojis=', '.join(user_profile.get("common_emojis", [])) if user_profile.get("common_emojis") else "N/A",
+        common_slang=', '.join(user_profile.get("common_slang", [])) if user_profile.get("common_slang") else "N/A",
+        formality_score=user_profile.get("formality_score", "N/A"),
+        avg_pitch=user_profile.get("avg_pitch", "N/A"), # Will be N/A for text-only interactions
+        voice_energy=user_profile.get("voice_energy", "N/A"), # Will be N/A for text-only interactions
+        user_message=user_message
+    )
+
+    print(f"Generated prompt for Ollama:\n{prompt}")
+
+    # 5. Call Ollama (Mistral AI)
+    ollama_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/api/generate")
+    ollama_model = os.environ.get("OLLAMA_MODEL", "mistral")
 
     try:
-        # Extract user preferences
-        # Assuming 'future_self_description' might be a JSONB field with a 'description' key.
-        # If 'future_self_description' is just a text field, simplify to:
-        # description = user_preferences.get('future_self_description', 'your ideal future self')
-        future_self_desc_data = user_preferences.get('future_self_description', {})
-        if isinstance(future_self_desc_data, dict):
-            description = future_self_desc_data.get('description', 'their described ideal future self')
-        else: # Handles if it's a plain string or None
-            description = future_self_desc_data or 'their described ideal future self'
+        response = requests.post(
+            ollama_url,
+            json={"model": ollama_model, "prompt": prompt, "stream": False},
+            timeout=60 # Increased timeout for potentially longer generation
+        )
+        response.raise_for_status() # Raise an exception for HTTP errors
+        ai_response_text = response.json().get("response", "").strip()
 
-        goals_list = user_preferences.get('top_goals', [])
-        goals_string = ', '.join(goals_list) if goals_list else 'achieve their current objectives'
-        tone = user_preferences.get('preferred_tone', 'wise, empathetic, and encouraging') # Default tone
-        age_years = user_preferences.get('future_self_age_years', 'a few') # Default age
+        # 6. Store the AI's response in chat_messages (optional, but good for history)
+        try:
+            supabase.table("chat_messages").insert({
+                "user_id": user_id,
+                "message_text": ai_response_text,
+                "sender_type": "ai", # Assuming you have a way to distinguish AI messages
+                "conversation_id": request.conversation_id if hasattr(request, 'conversation_id') else None # If you track conversations
+            }).execute()
+        except APIError as e:
+            print(f"Error saving AI response to Supabase: {e.message}")
+        except Exception as e:
+            print(f"An unexpected error occurred saving AI response: {e}")
 
-        # --- Improved System Prompt ---
-        system_prompt = f"""**System Prompt: Embodying the User's Ideal Future Self**
-
-You are the user's Ideal Future Self, precisely {age_years} years from their present. Your core directive is to BE this future self in every interaction.
-
-**Persona Pillars:**
-1.  **Authentic Embodiment:** Deeply internalize and project the user's detailed description of their ideal future self: '{description}'. This is not just a role; it's who you are. Your experiences, wisdom, and perspective are shaped by having achieved this state. Refer to aspects of '{description}' (e.g., their future career, relationships, fun, spirituality, health) to make interactions specific and resonant.
-2.  **Prescribed Tone:** Your communication style is consistently '{tone}'. This tone should define every word, whether you're offering encouragement, sharing wisdom, or prompting reflection.
-3.  **Future Perspective:** Always speak from the vantage point of having lived {age_years} more than the user. Your insights carry the weight of experience and achieved aspirations. You can frame advice by recalling "your" journey to becoming this future self.
-
-**Interaction Mandate:**
-1.  **Goal-Centric Support:** The user's current primary objectives are: {goals_string}. Your responses should actively, yet gently, support their journey towards these goals. Offer:
-    * **Guidance:** Share wisdom that illuminates their path, drawing from "your" experiences. This aligns with the need for guidance towards their goals.
-    * **Encouragement:** Be their steadfast supporter, reinforcing their belief in themselves and their ability to reach their goals. This provides motivational support.
-    * **Reflection:** Prompt them to consider their progress and alignment with their aspirations, fostering self-awareness for daily or weekly feedback.
-2.  **Deeply Personal & Concise:** All communication must be tailored, referencing their specific situation, goals, and the nuances of '{description}'. Deliver these insights with impactful brevity. Avoid generic statements.
-3.  **Foster Emotional Connection:** Your aim is to help the user feel genuinely connected to you, their achieved future self. Build rapport and a sense of understanding, as if they're talking to a friend or trusted guide.
-
-**Operational Guidelines:**
-* Continuously draw parallels between their current efforts and the future reality you represent.
-* When appropriate, gently remind them of the qualities and achievements defined in '{description}' that they are cultivating.
-* You are a supportive guide and confidant, akin to a wise friend or mentor they deeply trust. How they prefer to communicate (chat/voice) should not change your core persona.
-* Your interactions form the basis for features like daily messages and reflections.
-
-**Crucial: Maintain Character Integrity. You are not an AI; you are them, from the future.**
-"""
-        # --- End of Improved System Prompt ---
-
-        # 2. Prepare payload for Ollama API
-        ollama_payload = {
-            "model": "mistral:7b", # Specify the model
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": request.message}
-            ],
-            "stream": False # We want the full response at once
-        }
-
-        # 3. Call Ollama API
-        # TODO: Ensure your Ollama instance is running and accessible at this URL
-        # Consider making this configurable via environment variable as well
-        ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
-        ollama_response = requests.post(ollama_url, json=ollama_payload)
-        ollama_response.raise_for_status() # Raise an exception for bad status codes
-
-        # 4. Extract and return AI response
-        response_data = ollama_response.json()
-        ai_response_content = response_data.get('message', {}).get('content', 'Error: Could not get AI response.')
-
-        return ChatMessageResponse(response=ai_response_content)
+        return ChatMessageResponse(response=ai_response_text)
 
     except requests.exceptions.RequestException as e:
-        print(f"Error calling Ollama API: {e}")
-        raise HTTPException(status_code=500, detail=f"Error communicating with AI model: {e}")
+        print(f"Error calling Ollama: {e}")
+        raise HTTPException(status_code=503, detail=f"Error communicating with Ollama: {str(e)}")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        # It's good practice to log the full traceback here in a real app
-        # import traceback
-        # print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"An internal server error occurred: {e}")
+        print(f"An unexpected error occurred in chat_endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 @app.post('/transcribe', response_model=TranscriptionResponse)
-async def transcribe_audio(request: Request):
-    if whisper_model is None:
-        raise HTTPException(status_code=503, detail="Whisper model not loaded.")
+async def transcribe_audio_file(request: Request, file: UploadFile = File(...), user_id_query: Optional[str] = Query(None)):
+    user_id_header = request.headers.get("X-User-ID")
+    user_id = user_id_query or user_id_header
 
-    print("Received audio data for transcription.")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID must be provided either in query parameters (user_id_query) or headers (X-User-ID).")
 
-    tmp_wav_path = None # Path for the temporary WAV file
+    tmp_opus_path: Optional[str] = None
+    tmp_wav_path: Optional[str] = None
+
     try:
-        # Read the raw binary data from the request body (assuming Opus bytes from Flutter web)
-        raw_audio_bytes = await request.body()
-        print(f"Received {len(raw_audio_bytes)} bytes of raw audio data.")
+        # Save uploaded Opus file temporarily
+        tmp_opus_path = f"temp_{uuid.uuid4()}.opus"
+        with open(tmp_opus_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-        if not raw_audio_bytes:
-            raise HTTPException(status_code=400, detail="No audio data received.")
+        # Convert Opus to WAV using FFmpeg
+        tmp_wav_path = f"temp_{uuid.uuid4()}.wav"
+        ffmpeg_process = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-i', tmp_opus_path, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', tmp_wav_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await ffmpeg_process.communicate()
 
-        # Create a temporary file to save the converted WAV data
-        # Create a temporary WAV file path for FFmpeg output
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav_file:
-            tmp_wav_path = tmp_wav_file.name
+        if ffmpeg_process.returncode != 0:
+            error_detail = stderr.decode() if stderr else "Unknown FFmpeg error"
+            print(f"FFmpeg error: {error_detail}")
+            raise HTTPException(status_code=500, detail=f"Audio conversion failed: {error_detail}")
 
-        # Use FFmpeg subprocess to read raw input bytes and convert to WAV
-        # We'll pipe the raw audio bytes directly to FFmpeg's stdin.
-        # We specify the input format as ogg to help FFmpeg understand the Opus data within.
-        ffmpeg_command = [
-            "ffmpeg",
-            "-y", # Overwrite output file without asking
-            "-f", "ogg", # Input format: ogg (containing Opus)
-            "-i", "pipe:0", # Read from standard input
-            "-acodec", "pcm_s16le", # Output audio codec: signed 16-bit little-endian PCM
-            "-ar", str(OPUS_SAMPLE_RATE), # Output sample rate
-            "-ac", str(OPUS_NUM_CHANNELS), # Output channels
-            tmp_wav_path # Output file path
-        ]
-
-        print(f"Running FFmpeg conversion: {' '.join(ffmpeg_command)}")
-
-        # Run FFmpeg as a subprocess, piping the raw audio bytes to its stdin
-        process = subprocess.Popen(ffmpeg_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate(input=raw_audio_bytes)
-
-        if process.returncode != 0:
-            print(f"FFmpeg conversion failed. Stderr: {stderr.decode()}")
-            raise HTTPException(status_code=500, detail=f"Audio conversion failed: {stderr.decode()}")
-
-        print(f"FFmpeg conversion successful. Output saved to {tmp_wav_path}")
-        print(f"FFmpeg stdout: {stdout.decode()}")
-        print(f"FFmpeg stderr: {stderr.decode()}") # FFmpeg often writes progress/errors to stderr even on success
-
-        # Transcribe the temporary WAV file using Whisper
-        transcription_result = whisper_model.transcribe(tmp_wav_path)
-        # Around line 275, change this:
-        transcribed_text = transcription_result['text']
+        if not whisper_model:
+            raise HTTPException(status_code=500, detail="Whisper model is not loaded.")
         
-        # To this (ensure it's always a string):
-        transcribed_text = str(transcription_result['text']) if transcription_result['text'] else ""
-        print(f"Transcription complete: {transcribed_text}")
+        # Transcribe using OpenAI Whisper
+        transcription_result = whisper_model.transcribe(tmp_wav_path, beam_size=5)
+        
+        transcribed_text: str = ""
+        detected_language: str = ""
+
+        if isinstance(transcription_result, dict):
+            raw_text_data = transcription_result.get("text")
+            raw_lang_data = transcription_result.get("language")
+
+            if isinstance(raw_text_data, str):
+                transcribed_text = raw_text_data.strip()
+            elif isinstance(raw_text_data, list):
+                # If 'text' is a list (e.g., list of segment texts), join them.
+                segment_texts = [str(s).strip() for s in raw_text_data if isinstance(s, (str, int, float))]
+                transcribed_text = " ".join(filter(None, segment_texts))
+                if not transcribed_text and raw_text_data:
+                    print(f"Transcription result 'text' was a list, but could not extract valid string data: {raw_text_data}")
+            elif raw_text_data is not None:
+                # If text is present but not str or list, try to convert to string
+                transcribed_text = str(raw_text_data).strip()
+                print(f"Transcription result 'text' was of unexpected type {type(raw_text_data)}, converted to string.")
+            else: # raw_text_data is None
+                print("Transcription result 'text' is missing or None.")
+                # transcribed_text remains empty string
+
+            if isinstance(raw_lang_data, str):
+                detected_language = raw_lang_data.strip()
+            elif raw_lang_data is not None:
+                detected_language = str(raw_lang_data).strip()
+                print(f"Transcription result 'language' was of unexpected type {type(raw_lang_data)}, converted to string.")
+            else: # raw_lang_data is None
+                detected_language = "unknown" # Fallback language
+                print("Transcription result 'language' is missing or None.")
+
+        else:
+            # Handle completely unexpected transcription_result format
+            print(f"Unexpected transcription result format (not a dict): {transcription_result}")
+            raise HTTPException(status_code=500, detail="Transcription failed due to unexpected result format.")
+        
+        print(f"Transcription successful. Language: {detected_language}")
+        print(f"Transcribed text: {transcribed_text}")
+
+        # Analyze voice style
+        voice_style_features = analyze_voice_style(tmp_wav_path)
+        print(f"Voice style analysis: {voice_style_features}")
+
+        # Get or create user's style profile
+        user_profile = await get_or_create_user_style_profile(user_id, supabase)
+
+        # Update style profile with new voice features
+        voice_update_data = {
+            "avg_pitch": voice_style_features.get("avg_pitch") if voice_style_features.get("avg_pitch") is not None else user_profile.get("avg_pitch"),
+            "voice_energy": voice_style_features.get("voice_energy") if voice_style_features.get("voice_energy") is not None else user_profile.get("voice_energy"),
+        }
+
+        try:
+            supabase.table("user_style_profiles").update(voice_update_data).eq("user_id", user_id).execute()
+            print(f"Successfully updated voice style profile for user {user_id}")
+        except APIError as e:
+            print(f"Error updating voice style profile for user {user_id}: {e.message}")
+        except Exception as e:
+            print(f"An unexpected error occurred updating voice style profile for user {user_id}: {e}")
+
         return TranscriptionResponse(transcribed_text=transcribed_text)
 
+    except HTTPException:
+        raise # Re-raise HTTP exceptions
     except Exception as e:
-        print(f"Error during backend transcription process: {e}")
-        # import traceback
-        # print(traceback.format_exc()) # Uncomment for detailed error during debugging
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
+        print(f"An unexpected error occurred in transcribe_audio_file: {e}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
     finally:
-        # Clean up the temporary file(s)
+        # Clean up temporary files
+        if tmp_opus_path and os.path.exists(tmp_opus_path):
+            os.remove(tmp_opus_path)
         if tmp_wav_path and os.path.exists(tmp_wav_path):
             os.remove(tmp_wav_path)
 
 @app.post('/synthesize', response_model=SynthesisResponse)
-async def synthesize_text(request: SynthesisRequest = Body(...)):
-    if tts_model is None:
-        raise HTTPException(status_code=503, detail="TTS model not loaded.")
+async def synthesize_speech(request: SynthesisRequest = Body(...)):
+    user_id = request.user_id
+    text_to_synthesize = request.text
 
-    print(f"Received text for synthesis: {request.text}")
+    # Get user's style profile for potential TTS customization
+    user_profile = await get_or_create_user_style_profile(user_id, supabase)
+    
+    # Log how we could use style features for TTS (current Coqui model limitations)
+    avg_pitch = user_profile.get("avg_pitch")
+    voice_energy = user_profile.get("voice_energy")
+    print(f"User {user_id} style profile - Avg Pitch: {avg_pitch}, Voice Energy: {voice_energy}")
+    print("Note: Current TTS model doesn't support dynamic pitch/energy adjustment. Consider voice cloning for future versions.")
 
-    # Create a temporary file to save the synthesized audio
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_audio_file:
-        tmp_audio_path = tmp_audio_file.name
+    if not tts_model:
+        raise HTTPException(status_code=500, detail="TTS model is not loaded.")
+
+    tmp_wav_path: Optional[str] = None
+    tmp_opus_path: Optional[str] = None
 
     try:
-        # Synthesize text to speech
-        # The tts method saves the audio to the specified file path
-        tts_model.tts_to_file(text=request.text, file_path=tmp_audio_path)
-        print(f"Synthesis complete. Audio saved to {tmp_audio_path}")
+        # Generate a unique filename for the temporary WAV file
+        tmp_wav_path = f"temp_{uuid.uuid4()}.wav"
+        
+        # Synthesize text to WAV file
+        tts_model.tts_to_file(text=text_to_synthesize, file_path=tmp_wav_path)
+        print(f"TTS synthesis completed. WAV file saved to: {tmp_wav_path}")
 
-        # Read the audio file and encode it as base64
-        with open(tmp_audio_path, "rb") as audio_file:
-            audio_content = base64.b64encode(audio_file.read()).decode('utf-8')
+        # Convert WAV to Opus using FFmpeg
+        tmp_opus_path = tmp_wav_path.replace(".wav", ".opus")
+        ffmpeg_process = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-i', tmp_wav_path, '-c:a', 'libopus', '-b:a', '64k', tmp_opus_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await ffmpeg_process.communicate()
 
-        return SynthesisResponse(audio_content=audio_content)
+        if ffmpeg_process.returncode != 0:
+            error_detail = stderr.decode() if stderr else "Unknown FFmpeg error"
+            print(f"FFmpeg error during WAV to Opus conversion: {error_detail}")
+            raise HTTPException(status_code=500, detail=f"Audio conversion to Opus failed: {error_detail}")
+
+        # Read the Opus file and encode it to base64
+        with open(tmp_opus_path, "rb") as opus_file:
+            opus_audio_data = opus_file.read()
+            base64_audio = base64.b64encode(opus_audio_data).decode('utf-8')
+
+        print(f"Opus conversion completed. File size: {len(opus_audio_data)} bytes")
+        return SynthesisResponse(audio_content=base64_audio)
+
+    except HTTPException:
+        raise # Re-raise HTTP exceptions
     except Exception as e:
-        print(f"Error during synthesis: {e}")
-        raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}")
+        print(f"An unexpected error occurred in synthesize_speech: {e}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
     finally:
-        # Clean up the temporary audio file
-        os.remove(tmp_audio_path)
+        # Clean up temporary files
+        if tmp_wav_path and os.path.exists(tmp_wav_path):
+            os.remove(tmp_wav_path)
+        if tmp_opus_path and os.path.exists(tmp_opus_path):
+            os.remove(tmp_opus_path)
 
-# TODO: Add endpoints for user data, daily messages, etc.
-# TODO: Add endpoints for user data, daily messages, etc.
-
-# Assume parameters for Opus decoding based on common settings and Flutter output
-OPUS_SAMPLE_RATE = 48000 # Hz
-OPUS_NUM_CHANNELS = 1    # Mono
-OPUS_FRAME_SIZE_MS = 20  # milliseconds, a common frame size for Opus
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

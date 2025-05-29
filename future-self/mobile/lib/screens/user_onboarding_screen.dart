@@ -34,20 +34,22 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen> { // Make pu
         throw Exception('User not authenticated');
       }
   
-      // Combine the three goals into a single string
+      // Create goals array (filter out empty goals)
       final topGoals = [
         _goal1Controller.text,
         _goal2Controller.text,
         _goal3Controller.text,
-      ].where((goal) => goal.isNotEmpty).join(', ');
+      ].where((goal) => goal.isNotEmpty).toList();
   
       final userData = {
         'id': user.id,
         'name': _nameController.text,
-        'preferred_communication_method': _preferredCommunication, // Fixed: was _selectedCommunicationMethod
-        'future_self_description': _futureSelfDescriptionController.text,
-        'future_self_age': _futureSelfAge ?? 0, // Fixed: was _futureSelfAgeController.text
-        'top_goals': topGoals, // Fixed: was _topGoalsController.text
+        'preferred_communication': _preferredCommunication,
+        'future_self_description': {
+          'description': _futureSelfDescriptionController.text
+        }, // Convert to JSONB format
+        'future_self_age_years': _futureSelfAge ?? 0,
+        'top_goals': topGoals, // Now properly formatted as array
         'preferred_tone': _preferredToneController.text,
       };
   

@@ -1,0 +1,54 @@
+# FastAPI Backend Dependencies for Future Self App
+fastapi
+uvicorn
+requests
+supabase
+python-dotenv # For environment variables
+whisper-openai # For OpenAI Whisper
+TTS # For Coqui TTS
+pyogg
+# For style analysis
+spacy
+librosa
+numpy # Often a dependency for librosa/spacy, good to have explicitly
+
+# After installing spacy, you'll need to download a model, e.g.:
+# python -m spacy download en_core_web_sm
+
+# Core FastAPI framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# HTTP client for API requests
+requests==2.31.0
+
+# Supabase integration
+supabase==2.3.4
+postgrest==0.13.2
+
+# Audio processing dependencies
+whisper==1.1.10
+TTS==0.22.0
+pyogg==0.6.14a1
+
+# Audio file handling
+wave
+struct
+base64
+tempfile
+shutil
+subprocess
+
+# Data handling
+pydantic==2.5.0
+
+# CORS middleware
+fastapi[all]==0.104.1
+
+# Environment variables
+python-dotenv==1.0.0
+
+# Additional audio processing (if needed)
+# ffmpeg-python==0.2.0  # Alternative to subprocess ffmpeg calls
+# librosa==0.10.1       # Advanced audio analysis
+# soundfile==0.12.1     # Audio file I/O
