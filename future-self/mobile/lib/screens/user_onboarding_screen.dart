@@ -15,14 +15,27 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen> { // Make pu
   final _goal1Controller = TextEditingController();
   final _goal2Controller = TextEditingController();
   final _goal3Controller = TextEditingController();
+  
+  // New controllers for communication style
+  final _chatSampleController = TextEditingController();
+  final _commonPhrasesController = TextEditingController();
+  final _typicalResponseController = TextEditingController();
 
   String _preferredCommunication = 'chat'; // Default to chat
   int? _futureSelfAge; // Nullable int for age
+  
+  // New communication style variables
+  String _messageLength = 'medium';
+  double _emojiUsage = 3.0; // Scale of 1-5
+  String _punctuationStyle = 'standard';
+  bool _useSlang = false;
 
   bool _isLoading = false;
 
   final List<int> _ageOptions = [2, 5, 20];
   final List<String> _toneOptions = ['gentle', 'loving', 'spiritual', 'motivational', 'calm']; // Example tones
+  final List<String> _messageLengthOptions = ['short', 'medium', 'long'];
+  final List<String> _punctuationOptions = ['minimal', 'standard', 'expressive'];
 
   Future<void> _saveOnboardingData() async {
     setState(() {
@@ -51,6 +64,16 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen> { // Make pu
         'future_self_age_years': _futureSelfAge ?? 0,
         'top_goals': topGoals, // Now properly formatted as array
         'preferred_tone': _preferredToneController.text,
+        // New communication style fields
+        'communication_style': {
+          'chat_sample': _chatSampleController.text,
+          'common_phrases': _commonPhrasesController.text,
+          'typical_response': _typicalResponseController.text,
+          'message_length': _messageLength,
+          'emoji_usage': _emojiUsage,
+          'punctuation_style': _punctuationStyle,
+          'use_slang': _useSlang,
+        },
       };
   
       // Insert data into the 'users' table. Use upsert to handle cases where a user might somehow revisit this screen.
@@ -87,6 +110,9 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen> { // Make pu
     _goal1Controller.dispose();
     _goal2Controller.dispose();
     _goal3Controller.dispose();
+    _chatSampleController.dispose();
+    _commonPhrasesController.dispose();
+    _typicalResponseController.dispose();
     super.dispose();
   }
 
@@ -207,6 +233,115 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen> { // Make pu
                     },
                   ),
                   const SizedBox(height: 24.0),
+                  
+                  // Communication Style Section
+                  Text('Communication Style Analysis', 
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).primaryColor,
+                    )
+                  ),
+                  const SizedBox(height: 8.0),
+                  Text('Help us understand your natural communication style:', 
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Colors.grey[600],
+                    )
+                  ),
+                  const SizedBox(height: 16.0),
+                  
+                  Text('Quick Chat Sample:', style: Theme.of(context).textTheme.titleMedium),
+                  TextFormField(
+                    controller: _chatSampleController,
+                    decoration: const InputDecoration(
+                      labelText: 'Write a quick message about your day or how you\'re feeling',
+                      hintText: 'e.g., "Had an amazing day at work! Really excited about the new project 😊"',
+                    ),
+                    maxLines: 3,
+                  ),
+                  const SizedBox(height: 16.0),
+                  
+                  Text('Message Length Preference:', style: Theme.of(context).textTheme.titleMedium),
+                  SegmentedButton<String>(
+                    segments: _messageLengthOptions.map((option) => ButtonSegment<String>(
+                      value: option,
+                      label: Text(option.toUpperCase()),
+                    )).toList(),
+                    selected: {_messageLength},
+                    onSelectionChanged: (Set<String> newSelection) {
+                      setState(() {
+                        _messageLength = newSelection.first;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16.0),
+                  
+                  Text('Emoji Usage (1 = Rarely, 5 = Frequently):', style: Theme.of(context).textTheme.titleMedium),
+                  Slider(
+                    value: _emojiUsage,
+                    min: 1.0,
+                    max: 5.0,
+                    divisions: 4,
+                    label: _emojiUsage.round().toString(),
+                    onChanged: (double value) {
+                      setState(() {
+                        _emojiUsage = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16.0),
+                  
+                  Text('Punctuation Style:', style: Theme.of(context).textTheme.titleMedium),
+                  DropdownButtonFormField<String>(
+                    value: _punctuationStyle,
+                    items: _punctuationOptions.map((String style) {
+                      return DropdownMenuItem<String>(
+                        value: style,
+                        child: Text(style.toUpperCase()),
+                      );
+                    }).toList(),
+                    onChanged: (String? newValue) {
+                      if (newValue != null) {
+                        setState(() {
+                          _punctuationStyle = newValue;
+                        });
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 16.0),
+                  
+                  Text('Common Phrases/Slang:', style: Theme.of(context).textTheme.titleMedium),
+                  TextFormField(
+                    controller: _commonPhrasesController,
+                    decoration: const InputDecoration(
+                      labelText: 'Words or phrases you use often',
+                      hintText: 'e.g., "awesome", "no way", "totally", "for sure"',
+                    ),
+                    maxLines: 2,
+                  ),
+                  const SizedBox(height: 16.0),
+                  
+                  CheckboxListTile(
+                    title: const Text('I use casual slang and informal language'),
+                    value: _useSlang,
+                    onChanged: (bool? value) {
+                      setState(() {
+                        _useSlang = value ?? false;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16.0),
+                  
+                  Text('Typical Response Style:', style: Theme.of(context).textTheme.titleMedium),
+                  TextFormField(
+                    controller: _typicalResponseController,
+                    decoration: const InputDecoration(
+                      labelText: 'How would you typically respond to "How was your weekend?"',
+                      hintText: 'Write in your natural style...',
+                    ),
+                    maxLines: 3,
+                  ),
+                  const SizedBox(height: 24.0),
+                  
                   Center(
                     child: ElevatedButton(
                       onPressed: _isLoading || _futureSelfAge == null ? null : _saveOnboardingData,

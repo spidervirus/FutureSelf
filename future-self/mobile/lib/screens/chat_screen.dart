@@ -26,21 +26,114 @@ class ChatScreenState extends State<ChatScreen> {
   final AudioPlayer _audioPlayer = AudioPlayer();
   final String backendUrl = 'http://localhost:8000';
   
-  // Add this variable to store user's preferred communication method
-  String _preferredCommunicationMethod = 'chat'; // Default to chat
+  String _preferredCommunicationMethod = 'chat';
   bool _isLoadingPreferences = true;
   
-  // Add these variables for enhanced functionality
   Timer? _recordingTimer;
   int _recordingDuration = 0;
   bool _isPlayingAudio = false;
   String? _currentlyPlayingMessageId;
 
+  List<Map<String, dynamic>> _pastChatSessions = [];
+  bool _isLoadingPastChats = true;
+  bool _isInitialLoad = true; // Flag to manage initial message loading
+
   @override
   void initState() {
     super.initState();
     _loadUserPreferences();
-    _loadMessageHistory();
+    _fetchPastChatSessions();
+  }
+
+  Future<void> _fetchPastChatSessions() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoadingPastChats = true;
+    });
+    try {
+      final user = supabase.auth.currentUser;
+      if (user != null) {
+        final response = await supabase
+            .from('chat_messages')
+            .select('content, created_at, author_id')
+            .eq('user_id', user.id)
+            .order('created_at', ascending: false);
+
+        if (mounted) {
+          final Map<String, Map<String, dynamic>> groupedChats = {};
+          for (var msgData in response) {
+            final messageContent = msgData['content'] as String;
+            final createdAt = DateTime.parse(msgData['created_at']);
+            final dateStr = createdAt.toLocal().toString().substring(0, 10);
+
+            if (!groupedChats.containsKey(dateStr) && msgData['author_id'] == user.id) {
+              groupedChats[dateStr] = {
+                'id': msgData['created_at'], 
+                'title': messageContent.length > 30 ? '${messageContent.substring(0, 27)}...' : messageContent,
+                'subtitle': 'Chat from $dateStr',
+                'data': msgData 
+              };
+            } else if (groupedChats.containsKey(dateStr) && msgData['author_id'] == user.id) {
+              if (groupedChats[dateStr]!['data']['author_id'] != user.id) {
+                 groupedChats[dateStr]!['title'] = messageContent.length > 30 ? '${messageContent.substring(0, 27)}...' : messageContent;
+                 groupedChats[dateStr]!['data'] = msgData; 
+              }
+            }
+          }
+          if (mounted) {
+            setState(() {
+              _pastChatSessions = groupedChats.values.toList();
+              _pastChatSessions.sort((a, b) => (b['id'] as String).compareTo(a['id'] as String));
+              _isLoadingPastChats = false;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoadingPastChats = false;
+        });
+        // Optionally show a snackbar or log error
+        print('Error fetching past chat sessions for drawer: $e');
+      }
+    }
+  }
+
+  void _navigateToPastChat(Map<String, dynamic> chatData) {
+    print('Navigate to past chat: ${chatData['title']}');
+    Navigator.pop(context); // Close the drawer
+    final String fullTimestamp = chatData['id'] as String;
+    final String chatDate = fullTimestamp.substring(0, 10);
+
+    if (mounted) {
+      setState(() {
+        _messages.clear(); // Clear current messages before loading a past chat
+      });
+    }
+    _loadMessageHistory(specificChatDate: chatDate);
+    _isInitialLoad = false; // We've explicitly loaded a chat, so initial default load is no longer relevant
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final arguments = ModalRoute.of(context)?.settings.arguments as Map?;
+
+    if (arguments?['newChat'] == true) {
+      if (mounted) {
+        setState(() {
+          _messages.clear();
+        });
+      }
+      _isInitialLoad = false; // A new chat means initial load (of history) is not needed
+    } else if (_isInitialLoad) {
+      // Load history only on initial load and if not a 'newChat'
+      _loadMessageHistory();
+      _isInitialLoad = false;
+    }
+    // If it's not a new chat and not the initial load (e.g. a refresh after initial load),
+    // do nothing, preserving the current state of _messages.
   }
 
   // Add this method to fetch user preferences
@@ -81,18 +174,53 @@ class ChatScreenState extends State<ChatScreen> {
   }
 
   // Add method to load message history
-  Future<void> _loadMessageHistory() async {
+  Future<void> _loadMessageHistory({String? specificChatDate}) async {
+    if (_isLoadingHistory) return;
+    if (mounted) {
+      setState(() {
+        _isLoadingHistory = true;
+      });
+    }
+
+    // Clear messages only if we are loading a new set (either general history or a specific chat)
+    // This was moved from _navigateToPastChat to here to ensure it happens before any load.
+    if (mounted) {
+      setState(() {
+        // Consider adding a loading indicator for messages if it's a long operation
+      });
+    }
     try {
       final user = supabase.auth.currentUser;
       if (user != null) {
-        final response = await supabase
+        // Basic implementation: if specificChatDate is provided, you'd query based on that.
+        // This part needs to be fleshed out based on how chat sessions are identified and stored.
+        // For example, if 'id' in _pastChatSessions corresponds to a 'session_id' or a 'created_at' timestamp
+        // that can be used to filter messages.
+        //
+        // For now, if specificChatDate is NOT null, we assume we want to load messages for that chat.
+        // If it IS null, we load the general history.
+        // This is a placeholder for more specific logic.
+
+        SupabaseQueryBuilder query = supabase
             .from('chat_messages')
             .select()
-            .eq('user_id', user.id)
+            .eq('user_id', user.id);
+
+        if (specificChatDate != null) {
+          // Assumes specificChatDate is in 'YYYY-MM-DD' format
+          final DateTime startDate = DateTime.parse(specificChatDate);
+          final DateTime endDate = startDate.add(const Duration(days: 1));
+          query = query
+              .gte('created_at', startDate.toIso8601String())
+              .lt('created_at', endDate.toIso8601String());
+        }
+
+        final response = await query
             .order('created_at', ascending: false)
-            .limit(50);
+            .limit(specificChatDate == null ? 50 : 100); // Load more if it's a specific chat
         
         if (!mounted) return;
+
         final loadedMessages = response.map<types.Message>((data) {
           return types.TextMessage(
             author: types.User(id: data['author_id']),
@@ -102,12 +230,24 @@ class ChatScreenState extends State<ChatScreen> {
           );
         }).toList();
         
-        setState(() {
-          _messages.insertAll(0, loadedMessages.reversed);
-        });
+        if (mounted) {
+          setState(() {
+            _messages.clear(); // Clear previous messages before loading new/history
+            _messages.insertAll(0, loadedMessages.reversed);
+          });
+        }
       }
     } catch (e) {
       print('Error loading message history: $e');
+      if (mounted) {
+        // Optionally, set an error state or show a snackbar
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingHistory = false;
+        });
+      }
     }
   }
 
@@ -311,12 +451,21 @@ class ChatScreenState extends State<ChatScreen> {
   // Enhanced synthesis method with playback controls
   Future<void> _synthesizeSpeech(String textToSynthesize, String messageId) async {
     final url = Uri.parse('$backendUrl/synthesize');
+    final user = supabase.auth.currentUser;
+    
+    if (user == null) {
+      print('Error: No authenticated user found for speech synthesis');
+      return;
+    }
     
     try {
       final response = await http.post(
         url,
         headers: <String, String>{'Content-Type': 'application/json; charset=UTF-8'},
-        body: jsonEncode(<String, String>{'text': textToSynthesize}),
+        body: jsonEncode(<String, String>{
+          'text': textToSynthesize,
+          'user_id': user.id,
+        }),
       );
       
       if (response.statusCode == 200) {
@@ -670,6 +819,73 @@ class ChatScreenState extends State<ChatScreen> {
             },
           ),
         ],
+      ),
+      drawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: <Widget>[
+            const DrawerHeader(
+              decoration: BoxDecoration(
+                color: Colors.blue,
+              ),
+              child: Text(
+                'Menu',
+                style: TextStyle(color: Colors.white, fontSize: 24),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.chat_bubble_outline),
+              title: const Text('New Chat'),
+              onTap: () {
+                Navigator.pop(context); // Close drawer
+                if (mounted) {
+                  setState(() {
+                    _messages.clear(); // Clear messages for a new chat
+                  });
+                }
+                _isInitialLoad = false; // Switched to new chat, initial default load no longer relevant
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.dashboard_outlined),
+              title: const Text('Dashboard'),
+              onTap: () {
+                Navigator.pop(context); // Close drawer
+                Navigator.pushReplacementNamed(context, '/home');
+              },
+            ),
+            const Divider(),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              child: Text(
+                'Past Chats',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+              ),
+            ),
+            _isLoadingPastChats
+                ? const Center(child: Padding(
+                    padding: EdgeInsets.all(16.0),
+                    child: CircularProgressIndicator(),
+                  ))
+                : _pastChatSessions.isEmpty
+                    ? const ListTile(
+                        title: Text('No past chats found.'),
+                      )
+                    : ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(), // to disable scrolling within ListView in Drawer
+                        itemCount: _pastChatSessions.length,
+                        itemBuilder: (context, index) {
+                          final chat = _pastChatSessions[index];
+                          return ListTile(
+                            title: Text(chat['title'] ?? 'Chat Session'),
+                            subtitle: Text(chat['subtitle'] ?? 'Tap to view'),
+                            onTap: () => _navigateToPastChat(chat),
+                          );
+                        },
+                      ),
+          ],
+        ),
       ),
       body: Column(
         children: <Widget>[

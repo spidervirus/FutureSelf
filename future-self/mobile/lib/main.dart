@@ -5,6 +5,7 @@ import 'screens/auth/sign_up_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/user_onboarding_screen.dart';
 import 'screens/chat_screen.dart';
+import 'screens/past_chats_screen.dart'; // Add this import
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized(); // Ensure widgets are initialized
@@ -34,6 +35,7 @@ class MyApp extends StatelessWidget {
         '/onboarding': (context) => const UserOnboardingScreen(),
         '/home': (context) => const HomeScreen(),
         '/chat': (context) => const ChatScreen(),
+        '/pastChats': (context) => const PastChatsScreen(), // Add this route
       },
     );
   }

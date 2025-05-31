@@ -78,7 +78,7 @@ class HomeScreenState extends State<HomeScreen> { // Make public
   }
 
   void _navigateToChat() {
-    Navigator.pushNamed(context, '/chat');
+    Navigator.pushNamed(context, '/chat', arguments: {'newChat': true});
   }
 
   void _navigateToReflection() {
