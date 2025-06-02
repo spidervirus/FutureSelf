@@ -109,21 +109,29 @@ async def get_or_create_user_style_profile(user_id: str, supabase_client: Client
     try:
         # Try to fetch existing profile
         profile_response = supabase_client.table("user_style_profiles").select("*").eq("user_id", user_id).execute()
+        
+        # Also fetch communication style and personal info from users table
+        user_response = supabase_client.table("users").select("communication_style, name, nationality, date_of_birth, current_location").eq("id", user_id).execute()
+        communication_style = user_response.data[0].get("communication_style", {}) if user_response.data else {}
+        user_name = user_response.data[0].get("name", "") if user_response.data else ""
+        nationality = user_response.data[0].get("nationality", "") if user_response.data else ""
+        date_of_birth = user_response.data[0].get("date_of_birth", "") if user_response.data else ""
+        current_location = user_response.data[0].get("current_location", "") if user_response.data else ""
 
-        if profile_response.data and not profile_response.error:
-            return profile_response.data[0]
-        # Check for specific error indicating resource not found, or if there's any error and no data
-        elif profile_response.error:
-            # Attempt to access error details safely
-            error_code = getattr(profile_response.error, 'code', None)
-            error_message_detail = getattr(profile_response.error, 'message', str(profile_response.error))
-
-            if error_code == "PGRST116": # Resource not found
-                print(f"No style profile found for user {user_id} (PGRST116), creating default.")
-            else:
-                print(f"Error fetching style profile for user {user_id}: {error_message_detail} (Code: {error_code})")
+        if profile_response.data:
+            # Merge communication style data and user name with existing profile
+            profile = profile_response.data[0]
+            profile["communication_style"] = communication_style
+            profile["user_name"] = user_name
+            profile["nationality"] = nationality
+            profile["date_of_birth"] = date_of_birth
+            profile["current_location"] = current_location
+            return profile
+        # Check if no data was returned (profile not found)
+        else:
+            print(f"No style profile found for user {user_id}, creating default.")
             
-            # Proceed to create a default profile if not found or other fetch error
+            # Proceed to create a default profile if not found
             default_profile_data = {
                 "user_id": user_id,
                 "avg_sentence_length": None,
@@ -134,32 +142,27 @@ async def get_or_create_user_style_profile(user_id: str, supabase_client: Client
             }
             inserted_response = supabase_client.table("user_style_profiles").insert(default_profile_data).execute()
             
-            if inserted_response.data and not inserted_response.error:
-                return inserted_response.data[0]
+            if inserted_response.data:
+                profile = inserted_response.data[0]
+                profile["communication_style"] = communication_style
+                profile["user_name"] = user_name
+                profile["nationality"] = nationality
+                profile["date_of_birth"] = date_of_birth
+                profile["current_location"] = current_location
+                return profile
             else:
-                insert_error_message = "Failed to create default profile."
-                if inserted_response.error:
-                    insert_error_detail = getattr(inserted_response.error, 'message', str(inserted_response.error))
-                    insert_error_code = getattr(inserted_response.error, 'code', None)
-                    insert_error_message = f"Failed to create default profile: {insert_error_detail} (Code: {insert_error_code})"
-                print(f"Error creating default style profile for user {user_id}: {insert_error_message}")
+                print(f"Failed to create default profile for user {user_id}")
+                default_profile_data["communication_style"] = communication_style
+                default_profile_data["user_name"] = user_name
+                default_profile_data["nationality"] = nationality
+                default_profile_data["date_of_birth"] = date_of_birth
+                default_profile_data["current_location"] = current_location
                 return default_profile_data # Return defaults if creation fails
-        else: # No data and no error reported (should be rare, but handle defensively)
-            print(f"No style profile data for user {user_id} and no error reported, creating default.")
-            # (Duplicate of creation logic - consider refactoring)
-            default_profile_data = {
-                "user_id": user_id, "avg_sentence_length": None, "emoji_frequency": None, "formality_score": None, "avg_pitch": None, "voice_energy": None
-            }
-            inserted_response_fallback = supabase_client.table("user_style_profiles").insert(default_profile_data).execute()
-            if inserted_response_fallback.data and not inserted_response_fallback.error:
-                return inserted_response_fallback.data[0]
-            else:
-                fallback_error_msg = "Fallback profile creation failed."
-                if inserted_response_fallback.error:
-                    fallback_error_detail = getattr(inserted_response_fallback.error, 'message', str(inserted_response_fallback.error))
-                    fallback_error_msg = f"Fallback profile creation failed: {fallback_error_detail}"
-                print(f"Error creating default style profile (fallback path) for user {user_id}: {fallback_error_msg}")
-                return default_profile_data
+        # This else block is no longer needed since we handle the no-data case above
+        # Keeping it for defensive programming but simplified
+        # else:
+        #     print(f"Unexpected case: no data and no error for user {user_id}")
+        #     return default_profile_data
 
     except Exception as e:
         print(f"Error in get_or_create_user_style_profile for user {user_id}: {e}")
@@ -167,7 +170,7 @@ async def get_or_create_user_style_profile(user_id: str, supabase_client: Client
         return {
             "user_id": user_id, "avg_sentence_length": None, "emoji_frequency": None, 
             "common_emojis": [], "common_slang": [], "formality_score": None, 
-            "avg_pitch": None, "voice_energy": None
+            "avg_pitch": None, "voice_energy": None, "communication_style": {}, "user_name": ""
         }
 
 app = FastAPI()
@@ -175,8 +178,8 @@ app = FastAPI()
 # Add CORS middleware
 origins = [
     "http://localhost",
-    "http://localhost:*", # Allow any port for localhost during development
-    "http://localhost:50349", # Explicitly allow the Flutter web app origin
+    "http://localhost:*",
+    "http://localhost:54625",
 ]
 
 app.add_middleware(
@@ -306,11 +309,20 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
 
     # 4. Construct the prompt for Ollama, incorporating style
     # Base prompt - can be further refined
+    # Extract communication style data from onboarding
+    communication_style = user_profile.get("communication_style", {})
+    user_name = user_profile.get("user_name", "")
+    
     prompt_template = (
         "You are an AI assistant embodying the user's 'Future Self'. "
         "Your goal is to communicate in a way that reflects the user's current communication style, "
         "blended with aspirational qualities. Analyze the user's message and the provided style profile "
         "to guide your response. Be supportive, insightful, and slightly aspirational.\n\n"
+        "User Information:\n"
+        "- Name: {user_name}\n"
+        "- Nationality: {nationality}\n"
+        "- Date of Birth: {date_of_birth}\n"
+        "- Current Location: {current_location}\n\n"
         "User's Current Style Profile:\n"
         "- Average Sentence Length: {avg_sentence_length}\n"
         "- Emoji Frequency: {emoji_frequency} (0=none, 1=high)\n"
@@ -319,13 +331,29 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
         "- Formality Score: {formality_score} (0=very informal, 1=very formal)\n"
         "- Average Pitch (from voice, if available): {avg_pitch}\n"
         "- Voice Energy (from voice, if available): {voice_energy}\n\n"
+        "Communication Style from Onboarding:\n"
+        "- Message Length Preference: {message_length}\n"
+        "- Emoji Usage Level: {emoji_usage}/5\n"
+        "- Punctuation Style: {punctuation_style}\n"
+        "- Uses Casual Slang: {use_slang}\n"
+        "- Common Phrases: {common_phrases}\n"
+        "- Chat Sample: {chat_sample}\n"
+        "- Typical Response Style: {typical_response}\n\n"
         "Aspirational Qualities to gently weave in: Clarity, confidence, wisdom, positivity.\n\n"
         "User's message: '{user_message}'\n\n"
-        "Future Self AI, respond to the user, subtly mimicking their style while embodying their future self:")
+        "Future Self AI, respond to the user{name_instruction}, subtly mimicking their style while embodying their future self:")
 
     # Fill the prompt template with style data
     # Use defaults if some profile attributes are None
+    # Determine name instruction based on whether user name is available
+    name_instruction = f" (address them by name: {user_name})" if user_name and user_name.strip() else ""
+    
     prompt = prompt_template.format(
+        user_name=user_name if user_name and user_name.strip() else "Not provided",
+        nationality=user_profile.get("nationality", "Not provided") if user_profile.get("nationality") and user_profile.get("nationality").strip() else "Not provided",
+        date_of_birth=user_profile.get("date_of_birth", "Not provided") if user_profile.get("date_of_birth") else "Not provided",
+        current_location=user_profile.get("current_location", "Not provided") if user_profile.get("current_location") and user_profile.get("current_location").strip() else "Not provided",
+        name_instruction=name_instruction,
         avg_sentence_length=user_profile.get("avg_sentence_length", "N/A"),
         emoji_frequency=user_profile.get("emoji_frequency", "N/A"),
         common_emojis=', '.join(user_profile.get("common_emojis", [])) if user_profile.get("common_emojis") else "N/A",
@@ -333,6 +361,14 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
         formality_score=user_profile.get("formality_score", "N/A"),
         avg_pitch=user_profile.get("avg_pitch", "N/A"), # Will be N/A for text-only interactions
         voice_energy=user_profile.get("voice_energy", "N/A"), # Will be N/A for text-only interactions
+        # Communication style from onboarding
+        message_length=communication_style.get("message_length", "N/A"),
+        emoji_usage=communication_style.get("emoji_usage", "N/A"),
+        punctuation_style=communication_style.get("punctuation_style", "N/A"),
+        use_slang=communication_style.get("use_slang", "N/A"),
+        common_phrases=communication_style.get("common_phrases", "N/A"),
+        chat_sample=communication_style.get("chat_sample", "N/A"),
+        typical_response=communication_style.get("typical_response", "N/A"),
         user_message=user_message
     )
 
@@ -340,7 +376,7 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
 
     # 5. Call Ollama (Mistral AI)
     ollama_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/api/generate")
-    ollama_model = os.environ.get("OLLAMA_MODEL", "mistral")
+    ollama_model = os.environ.get("OLLAMA_MODEL", "mistral:7b")
 
     try:
         response = requests.post(
@@ -355,9 +391,9 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
         try:
             supabase.table("chat_messages").insert({
                 "user_id": user_id,
-                "message_text": ai_response_text,
-                "sender_type": "ai", # Assuming you have a way to distinguish AI messages
-                "conversation_id": request.conversation_id if hasattr(request, 'conversation_id') else None # If you track conversations
+                "message_id": f"ai_{uuid.uuid4()}",
+                "content": ai_response_text,
+                "author_id": "ai" # AI as the author
             }).execute()
         except APIError as e:
             print(f"Error saving AI response to Supabase: {e.message}")
