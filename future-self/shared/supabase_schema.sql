@@ -146,12 +146,18 @@ ALTER TABLE public.reflections OWNER TO postgres;
 CREATE TABLE public.users (
     id uuid NOT NULL,
     name text NOT NULL,
+    nationality text,
+    birth_country text,
+    date_of_birth date,
+    current_location text,
+    profile_image_path text,
     preferred_communication text NOT NULL,
     future_self_description jsonb NOT NULL,
     future_self_age_years integer NOT NULL,
     top_goals text[] NOT NULL,
-    preferred_tone text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    communication_style jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now()
 );
 
 
@@ -505,3 +511,59 @@ ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public GRANT ALL ON T
 -- PostgreSQL database dump complete
 --
 
+-- Drop existing table
+DROP TABLE IF EXISTS user_style_profiles CASCADE;
+
+-- Create user_style_profiles table that matches the backend expectations
+CREATE TABLE user_style_profiles (
+    id SERIAL PRIMARY KEY,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    
+    -- Voice and communication analysis fields (used by backend)
+    avg_sentence_length NUMERIC,
+    emoji_frequency NUMERIC,
+    formality_score NUMERIC,
+    avg_pitch NUMERIC,
+    voice_energy NUMERIC,
+    
+    -- Additional fields for natural conversation enhancement
+    communication_style JSONB DEFAULT '{}',
+    emotional_tone TEXT DEFAULT 'supportive',
+    response_length TEXT DEFAULT 'medium',
+    personality_traits JSONB DEFAULT '{}',
+    voice_settings JSONB DEFAULT '{}',
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Add updated_at trigger
+CREATE TRIGGER update_user_style_profiles_updated_at
+    BEFORE UPDATE ON user_style_profiles
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- Enable Row Level Security
+ALTER TABLE user_style_profiles ENABLE ROW LEVEL SECURITY;
+
+-- Create RLS policies
+CREATE POLICY "Users can view their own style profile" ON user_style_profiles
+    FOR SELECT USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert their own style profile" ON user_style_profiles
+    FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their own style profile" ON user_style_profiles
+    FOR UPDATE USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own style profile" ON user_style_profiles
+    FOR DELETE USING (auth.uid() = user_id);
+
+-- Grant permissions
+GRANT ALL ON TABLE user_style_profiles TO anon;
+GRANT ALL ON TABLE user_style_profiles TO authenticated;
+GRANT ALL ON TABLE user_style_profiles TO service_role;
+GRANT ALL ON SEQUENCE user_style_profiles_id_seq TO anon;
+GRANT ALL ON SEQUENCE user_style_profiles_id_seq TO authenticated;
+GRANT ALL ON SEQUENCE user_style_profiles_id_seq TO service_role;

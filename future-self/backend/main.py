@@ -1,22 +1,27 @@
-from fastapi import FastAPI, Body, HTTPException, File, UploadFile, Request, Query # Import Request and Query
-from pydantic import BaseModel
-import requests # Import requests for calling Ollama
-import os # Import os to read environment variables
-from supabase import create_client, Client # Import Supabase client
-from postgrest.exceptions import APIError # Import specific Supabase exceptions
-from fastapi.middleware.cors import CORSMiddleware # Import CORSMiddleware
-import whisper # Import OpenAI's Whisper library
-from TTS.api import TTS # Import Coqui TTS library
-import shutil # To save uploaded file to a temporary file
-import base64 # To encode audio to base64
-import asyncio # Import asyncio for async subprocess
-import uuid # Import uuid for unique file names
-from typing import Optional # Import Optional for type hints
+import os
+import shutil
+import uuid
+import asyncio
 import re
-import numpy as np
+import base64
+from typing import Optional
+from fastapi import FastAPI, File, UploadFile, HTTPException, Body, Request, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from supabase import create_client, Client
+from postgrest.exceptions import APIError
+import requests
+import whisper
+from TTS.api import TTS
 import spacy
+import subprocess
+import sys
 import librosa
-from dotenv import load_dotenv # Ensure this is imported if not already
+import numpy as np
+from dotenv import load_dotenv
+from astrology_service import astrology_service
+from weather_events_service import WeatherEventsService
+from datetime import datetime
 
 # --- Load environment variables ---
 load_dotenv() # Call it early
@@ -36,7 +41,7 @@ try:
 except OSError:
     print(f"spaCy model '{NLP_MODEL_NAME}' not found. Downloading...")
     try:
-        spacy.cli.download(NLP_MODEL_NAME)
+        subprocess.check_call([sys.executable, "-m", "spacy", "download", NLP_MODEL_NAME])
         nlp = spacy.load(NLP_MODEL_NAME)
         print(f"spaCy model '{NLP_MODEL_NAME}' downloaded and loaded successfully.")
     except Exception as e:
@@ -82,7 +87,7 @@ def analyze_voice_style(audio_file_path: str):
     try:
         y, sr = librosa.load(audio_file_path, sr=None) # Load with original sample rate
 
-        f0, _, _ = librosa.pyin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+        f0, _, _ = librosa.pyin(y, fmin=float(librosa.note_to_hz('C2')), fmax=float(librosa.note_to_hz('C7')))
         avg_pitch = np.nanmean(f0) if f0 is not None and len(f0[~np.isnan(f0)]) > 0 else None
 
         rms_energy = np.mean(librosa.feature.rms(y=y))
@@ -104,28 +109,383 @@ def analyze_voice_style(audio_file_path: str):
             # "speaking_rate": None,
         }
 
+# --- Helper Functions for Natural Conversation --- #
+
+# Get recent conversation context for natural flow
+async def get_conversation_context(user_id: str, supabase_client: Client, limit: int = 5) -> list:
+    try:
+        response = supabase_client.table("chat_messages")\
+            .select("content, author_id, created_at")\
+            .eq("user_id", user_id)\
+            .order("created_at", desc=True)\
+            .limit(limit * 2)\
+            .execute()
+        
+        if response.data:
+            # Format as conversation flow
+            messages = []
+            for msg in reversed(response.data):
+                role = "You" if msg["author_id"] != "ai" else "Your future self"
+                messages.append(f"{role}: {msg['content']}")
+            return messages[-limit:] if len(messages) > limit else messages
+        return []
+    except Exception as e:
+        print(f"Error getting conversation context: {e}")
+        return []
+
+# Detect emotional context for natural responses
+def detect_emotional_context(message: str) -> str:
+    message_lower = message.lower()
+    
+    # Stress/Anxiety patterns
+    if any(word in message_lower for word in ['stressed', 'anxious', 'worried', 'overwhelmed', 'scared', 'panic']):
+        return "You sense your current self is feeling overwhelmed. You remember this feeling well."
+    
+    # Excitement/Joy patterns  
+    elif any(word in message_lower for word in ['excited', 'happy', 'amazing', 'great', 'wonderful', 'fantastic']):
+        return "You feel your current self's excitement and it brings back memories of your own journey."
+    
+    # Confusion/Uncertainty patterns
+    elif any(word in message_lower for word in ['confused', 'lost', 'stuck', 'don\'t know', 'unsure', 'help']):
+        return "You recognize this uncertainty - you've been exactly where they are now."
+    
+    # Sadness/Disappointment patterns
+    elif any(word in message_lower for word in ['sad', 'disappointed', 'failed', 'giving up', 'hopeless']):
+        return "You feel your current self's pain and remember when you felt the same way."
+    
+    # Goal/Ambition patterns
+    elif any(word in message_lower for word in ['goal', 'dream', 'want to', 'planning', 'future', 'hope']):
+        return "You smile, remembering when you had these same aspirations."
+    
+    return "You listen with the understanding that comes from having lived through similar experiences."
+
+# Remove AI-speak patterns to make responses more human
+def humanize_response(ai_response: str, user_name: str) -> str:
+    # Remove AI-speak patterns
+    ai_patterns = [
+        (r"as an ai", ""),
+        (r"i'm here to help", ""),
+        (r"i understand that", "I remember"),
+        (r"based on your", "knowing you"),
+        (r"i recommend", "I think you should"),
+        (r"you might want to consider", "maybe try"),
+        (r"as an assistant", ""),
+        (r"i'm an ai", ""),
+    ]
+    
+    response = ai_response
+    for pattern, replacement in ai_patterns:
+        response = re.sub(pattern, replacement, response, flags=re.IGNORECASE)
+    
+    return response.strip()
+
+# Create natural future self prompt with comprehensive onboarding data
+def create_future_self_prompt(user_message: str, user_profile: dict, conversation_context: list | None = None, weather_events_context: dict | None = None) -> str:
+    if conversation_context is None:
+        conversation_context = []
+    user_name = user_profile.get("user_name", "")
+    name_part = user_name if user_name and user_name.strip() else "your current self"
+    
+    # Extract onboarding data for persona building
+    nationality = user_profile.get("nationality", "")
+    current_location = user_profile.get("current_location", "")
+    future_self_description = user_profile.get("future_self_description", "")
+    preferred_tone = user_profile.get("preferred_tone", "")
+    
+    # Personal reflection insights
+    mind_space = user_profile.get("mind_space", "")
+    future_proud = user_profile.get("future_proud", "")
+    most_yourself = user_profile.get("most_yourself", "")
+    low_moments = user_profile.get("low_moments", "")
+    spiral_reminder = user_profile.get("spiral_reminder", "")
+    
+    # Growth and challenges
+    change_goal = user_profile.get("change_goal", "")
+    avoid_tendency = user_profile.get("avoid_tendency", "")
+    feeling_description = user_profile.get("feeling_description", "")
+    
+    # Future vision
+    future_description = user_profile.get("future_description", "")
+    future_age = user_profile.get("future_age", "")
+    typical_day = user_profile.get("typical_day", "")
+    accomplishment = user_profile.get("accomplishment", "")
+    
+    # Communication style
+    words_slang = user_profile.get("words_slang", "")
+    message_preference = user_profile.get("message_preference", "")
+    messaging_frequency = user_profile.get("messaging_frequency", "")
+    emoji_usage_preference = user_profile.get("emoji_usage_preference", "")
+    communication_tone = user_profile.get("communication_tone", "")
+    chat_sample = user_profile.get("chat_sample", "")
+    common_phrases = user_profile.get("common_phrases", "")
+    
+    # Build persona context
+    persona_context = ""
+    if nationality or current_location:
+        location_info = f" from {nationality}" if nationality else ""
+        location_info += f" living in {current_location}" if current_location else ""
+        persona_context += f"You're{location_info}. "
+    
+    if future_self_description:
+        persona_context += f"You described your future self as: {future_self_description}. "
+    
+    # Core persona establishment with rich context
+    base_prompt = f"""
+You are {name_part}'s future self, speaking from {future_age if future_age else '5-10'} years ahead. {persona_context}You've lived through exactly what {name_part} is experiencing now. You remember these feelings, these challenges, these dreams - because they were YOUR feelings, challenges, and dreams.
+
+You're not an AI assistant. You're literally {name_part} who has grown, learned, and gained wisdom through experience.
+"""
+    
+    # Add personal insights from onboarding
+    if mind_space:
+        base_prompt += f"\n\nYou remember when you used to think about: {mind_space}. You've gained perspective on these thoughts."
+    
+    if change_goal:
+        base_prompt += f"\n\nYou remember saying you'd change: {change_goal}. You know the journey of actually making that change."
+    
+    if avoid_tendency:
+        base_prompt += f"\n\nYou remember how you used to avoid: {avoid_tendency}. You've learned to face these things differently."
+    
+    if spiral_reminder:
+        base_prompt += f"\n\nYou remember needing to hear: {spiral_reminder} when you were spiraling. You know exactly when and how to offer this wisdom."
+    
+    if accomplishment:
+        base_prompt += f"\n\nYou've achieved what you once dreamed of: {accomplishment}. You know the path that led there."
+    
+    if typical_day:
+        base_prompt += f"\n\nYour typical day now looks like: {typical_day}. You remember the journey from where you were to where you are."
+    
+    # Add communication style guidance
+    communication_guidance = ""
+    if preferred_tone:
+        communication_guidance += f"You naturally communicate with a {preferred_tone} tone. "
+    
+    if message_preference == "long":
+        communication_guidance += "You tend to give thoughtful, detailed responses. "
+    elif message_preference == "short":
+        communication_guidance += "You prefer concise, direct communication. "
+    
+    if emoji_usage_preference == "love them":
+        communication_guidance += "You use emojis naturally in your communication. "
+    elif emoji_usage_preference == "never":
+        communication_guidance += "You communicate without emojis. "
+    
+    if words_slang:
+        communication_guidance += f"You might use phrases like: {words_slang}. "
+    
+    if common_phrases:
+        communication_guidance += f"You often say things like: {common_phrases}. "
+    
+    if chat_sample:
+        communication_guidance += f"Your communication style is similar to: {chat_sample}. "
+    
+    # Add astrology insights if available
+    astrology_context = ""
+    astrology_data = user_profile.get('astrology_data', {})
+    if astrology_data and 'insights' in astrology_data:
+        insights = astrology_data['insights']
+        sun_sign = astrology_data.get('birth_chart', {}).get('sun_sign', '')
+        if sun_sign:
+            astrology_context += f"\n\nAs a {sun_sign}, you understand the core traits that have shaped your journey: {insights.get('sun_sign_traits', '')} "
+        
+        if 'moon_sign' in insights:
+            astrology_context += f"Your Moon in {insights['moon_sign']} has influenced your emotional growth. "
+        
+        if 'rising_sign' in insights:
+            astrology_context += f"With {insights['rising_sign']} rising, you've learned how your outer personality has evolved. "
+    
+    base_prompt += astrology_context
+    
+    # Add weather and events context if available
+    weather_events_context_text = ""
+    if weather_events_context and weather_events_context != {}:
+        current_location = user_profile.get('current_location', '')
+        
+        # Add current weather context
+        if 'weather' in weather_events_context and weather_events_context['weather']:
+            weather = weather_events_context['weather']
+            weather_events_context_text += f"\n\nRight now in {current_location}, it's {weather['description']} with a temperature of {weather['temperature']}°C. "
+            
+            # Generate weather advice using the service
+            weather_service = WeatherEventsService()
+            from weather_events_service import WeatherData
+            weather_obj = WeatherData(
+                temperature=weather['temperature'],
+                feels_like=weather['feels_like'],
+                humidity=weather['humidity'],
+                description=weather['description'],
+                wind_speed=weather['wind_speed'],
+                pressure=weather['pressure']
+            )
+            advice = weather_service.get_weather_advice(weather_obj)
+            weather_events_context_text += f"Given the current weather, you might suggest: {advice} "
+            
+        # Add local events context
+        if 'events' in weather_events_context and weather_events_context['events']:
+            events = weather_events_context['events'][:3]  # Limit to top 3 events
+            if events:
+                weather_events_context_text += f"\n\nThere are some interesting events happening in {current_location}: "
+                for event in events:
+                    weather_events_context_text += f"{event['name']} on {event['date']}. "
+                weather_events_context_text += "You might reference these when giving advice about getting out or staying engaged with the community. "
+    
+    base_prompt += weather_events_context_text
+    base_prompt += f"\n\nYour current self just shared: \"{user_message}\"\n\n{detect_emotional_context(user_message)}"
+    
+    # Add conversation context if available
+    if conversation_context:
+        context_text = "\n\nRecent conversation:\n" + "\n".join(conversation_context)
+        base_prompt += context_text
+    
+    # Add natural conversation guidance with communication style
+    guidance = f"""
+
+{communication_guidance}
+
+As their future self, you naturally embody different aspects depending on what they need:
+
+- When they need direction: Share wisdom from your journey, ask guiding questions
+- When they're struggling: Reflect their feelings back with understanding, offer comfort
+- When they're excited: Share in their joy, help them channel that energy
+- When they're stuck: Gently challenge their perspective, offer new ways of thinking
+- When they're planning: Help them think through decisions with your experience
+- When discussing daily life: Use current weather and local events to provide contextual, practical advice
+- When they need motivation: Suggest weather-appropriate activities or local events that align with their goals
+
+Respond as your future self would - with understanding, wisdom, and authentic care. Sometimes you might:
+- Share a memory of when you felt exactly this way
+- Ask a question that helps them see things differently  
+- Offer gentle guidance from your experience
+- Simply validate what they're feeling
+- Challenge them lovingly when needed
+
+Be natural. Be authentic. Be the wise, loving version of {name_part} who wants to help. Draw from your shared experiences and the journey you've taken to become who you are now.
+"""
+    
+    return base_prompt + guidance
+
 # --- Helper function to get or create user style profile --- #
 async def get_or_create_user_style_profile(user_id: str, supabase_client: Client) -> dict:
     try:
         # Try to fetch existing profile
         profile_response = supabase_client.table("user_style_profiles").select("*").eq("user_id", user_id).execute()
         
-        # Also fetch communication style and personal info from users table
-        user_response = supabase_client.table("users").select("communication_style, name, nationality, date_of_birth, current_location").eq("id", user_id).execute()
-        communication_style = user_response.data[0].get("communication_style", {}) if user_response.data else {}
-        user_name = user_response.data[0].get("name", "") if user_response.data else ""
-        nationality = user_response.data[0].get("nationality", "") if user_response.data else ""
-        date_of_birth = user_response.data[0].get("date_of_birth", "") if user_response.data else ""
-        current_location = user_response.data[0].get("current_location", "") if user_response.data else ""
+        # Also fetch all onboarding data from users table
+        user_response = supabase_client.table("users").select("""
+            communication_style, name, nationality, birth_country, date_of_birth, current_location,
+            future_self_description, preferred_tone, mind_space, future_proud, most_yourself,
+            low_moments, spiral_reminder, change_goal, avoid_tendency, feeling_description,
+            future_description, future_age, typical_day, accomplishment, words_slang,
+            message_preference, messaging_frequency, emoji_usage_preference,
+            preferred_communication, communication_tone, message_length, emoji_usage,
+            punctuation_style, use_slang, chat_sample, common_phrases
+        """).eq("id", user_id).execute()
+        # Extract all user data from the response
+        user_data = user_response.data[0] if user_response.data else {}
+        communication_style = user_data.get("communication_style", {})
+        user_name = user_data.get("name", "")
+        nationality = user_data.get("nationality", "")
+        birth_country = user_data.get("birth_country", "")
+        date_of_birth = user_data.get("date_of_birth", "")
+        current_location = user_data.get("current_location", "")
+        
+        # Generate astrology data if birth date and country are available
+        astrology_data = {}
+        if date_of_birth and birth_country:
+            try:
+                birth_date = datetime.fromisoformat(date_of_birth.replace('Z', '+00:00')) if isinstance(date_of_birth, str) else date_of_birth
+                if isinstance(birth_date, str):
+                    birth_date = datetime.strptime(birth_date, '%Y-%m-%d')
+                birth_chart = astrology_service.generate_birth_chart(birth_date, birth_country)
+                astrology_insights = astrology_service.get_astrological_insights(birth_chart)
+                astrology_data = {
+                    'birth_chart': birth_chart,
+                    'insights': astrology_insights
+                }
+            except Exception as e:
+                print(f"Error generating astrology data for user {user_id}: {e}")
+                astrology_data = {'error': str(e)}
+        
+        # Extract from nested future_self_description JSON
+        future_self_description_data = user_data.get("future_self_description", {})
+        future_self_description = str(future_self_description_data) if future_self_description_data else ""
+        preferred_tone = user_data.get("preferred_tone", "")
+        mind_space = future_self_description_data.get("mind_space", "") if isinstance(future_self_description_data, dict) else ""
+        future_proud = future_self_description_data.get("future_proud", "") if isinstance(future_self_description_data, dict) else ""
+        most_yourself = future_self_description_data.get("most_yourself", "") if isinstance(future_self_description_data, dict) else ""
+        low_moments = future_self_description_data.get("low_moments", "") if isinstance(future_self_description_data, dict) else ""
+        spiral_reminder = future_self_description_data.get("spiral_reminder", "") if isinstance(future_self_description_data, dict) else ""
+        
+        # Growth and challenges data from nested JSON
+        change_goal = future_self_description_data.get("change_goal", "") if isinstance(future_self_description_data, dict) else ""
+        avoid_tendency = future_self_description_data.get("avoid_tendency", "") if isinstance(future_self_description_data, dict) else ""
+        feeling_description = future_self_description_data.get("feeling_description", "") if isinstance(future_self_description_data, dict) else ""
+        
+        # Future vision data from nested JSON
+        future_description = future_self_description_data.get("future_description", "") if isinstance(future_self_description_data, dict) else ""
+        future_age = str(user_data.get("future_self_age_years", ""))  # Changed from "future_age" to "future_self_age_years"
+        typical_day = future_self_description_data.get("typical_day", "") if isinstance(future_self_description_data, dict) else ""
+        accomplishment = future_self_description_data.get("accomplishment", "") if isinstance(future_self_description_data, dict) else ""
+        
+        # Communication style data from nested JSON
+        words_slang = communication_style.get("words_slang", "") if isinstance(communication_style, dict) else ""
+        message_preference = communication_style.get("message_preference", "") if isinstance(communication_style, dict) else ""
+        messaging_frequency = communication_style.get("messaging_frequency", "") if isinstance(communication_style, dict) else ""
+        emoji_usage_preference = communication_style.get("emoji_usage_preference", "") if isinstance(communication_style, dict) else ""
+        preferred_communication = user_data.get("preferred_communication", "")
+        communication_tone = communication_style.get("communication_tone", "") if isinstance(communication_style, dict) else ""
+        message_length = communication_style.get("message_length", "") if isinstance(communication_style, dict) else ""
+        emoji_usage = communication_style.get("emoji_usage", 0) if isinstance(communication_style, dict) else 0
+        punctuation_style = communication_style.get("punctuation_style", "") if isinstance(communication_style, dict) else ""
+        use_slang = communication_style.get("use_slang", False) if isinstance(communication_style, dict) else False
+        chat_sample = communication_style.get("chat_sample", "") if isinstance(communication_style, dict) else ""
+        common_phrases = communication_style.get("common_phrases", "") if isinstance(communication_style, dict) else ""
 
         if profile_response.data:
-            # Merge communication style data and user name with existing profile
+            # Merge all onboarding data with existing profile
             profile = profile_response.data[0]
             profile["communication_style"] = communication_style
             profile["user_name"] = user_name
             profile["nationality"] = nationality
+            profile["birth_country"] = birth_country
             profile["date_of_birth"] = date_of_birth
             profile["current_location"] = current_location
+            profile["astrology_data"] = astrology_data
+            
+            # Add personal reflection data
+            profile["future_self_description"] = future_self_description
+            profile["preferred_tone"] = preferred_tone
+            profile["mind_space"] = mind_space
+            profile["future_proud"] = future_proud
+            profile["most_yourself"] = most_yourself
+            profile["low_moments"] = low_moments
+            profile["spiral_reminder"] = spiral_reminder
+            
+            # Add growth and challenges data
+            profile["change_goal"] = change_goal
+            profile["avoid_tendency"] = avoid_tendency
+            profile["feeling_description"] = feeling_description
+            
+            # Add future vision data
+            profile["future_description"] = future_description
+            profile["future_age"] = future_age
+            profile["typical_day"] = typical_day
+            profile["accomplishment"] = accomplishment
+            
+            # Add communication style data
+            profile["words_slang"] = words_slang
+            profile["message_preference"] = message_preference
+            profile["messaging_frequency"] = messaging_frequency
+            profile["emoji_usage_preference"] = emoji_usage_preference
+            profile["preferred_communication"] = preferred_communication
+            profile["communication_tone"] = communication_tone
+            profile["message_length"] = message_length
+            profile["emoji_usage"] = emoji_usage
+            profile["punctuation_style"] = punctuation_style
+            profile["use_slang"] = use_slang
+            profile["chat_sample"] = chat_sample
+            profile["common_phrases"] = common_phrases
+            
             return profile
         # Check if no data was returned (profile not found)
         else:
@@ -147,16 +507,77 @@ async def get_or_create_user_style_profile(user_id: str, supabase_client: Client
                 profile["communication_style"] = communication_style
                 profile["user_name"] = user_name
                 profile["nationality"] = nationality
+                profile["birth_country"] = birth_country
                 profile["date_of_birth"] = date_of_birth
                 profile["current_location"] = current_location
+                profile["astrology_data"] = astrology_data
+                             
+                # Add all onboarding data to profile
+                profile["future_self_description"] = future_self_description
+                profile["preferred_tone"] = preferred_tone
+                profile["mind_space"] = mind_space
+                profile["future_proud"] = future_proud
+                profile["most_yourself"] = most_yourself
+                profile["low_moments"] = low_moments
+                profile["spiral_reminder"] = spiral_reminder
+                profile["change_goal"] = change_goal
+                profile["avoid_tendency"] = avoid_tendency
+                profile["feeling_description"] = feeling_description
+                profile["future_description"] = future_description
+                profile["future_age"] = future_age
+                profile["typical_day"] = typical_day
+                profile["accomplishment"] = accomplishment
+                profile["words_slang"] = words_slang
+                profile["message_preference"] = message_preference
+                profile["messaging_frequency"] = messaging_frequency
+                profile["emoji_usage_preference"] = emoji_usage_preference
+                profile["preferred_communication"] = preferred_communication
+                profile["communication_tone"] = communication_tone
+                profile["message_length"] = message_length
+                profile["emoji_usage"] = emoji_usage
+                profile["punctuation_style"] = punctuation_style
+                profile["use_slang"] = use_slang
+                profile["chat_sample"] = chat_sample
+                profile["common_phrases"] = common_phrases
+                
                 return profile
             else:
                 print(f"Failed to create default profile for user {user_id}")
+                # Add all onboarding data to default profile
                 default_profile_data["communication_style"] = communication_style
                 default_profile_data["user_name"] = user_name
                 default_profile_data["nationality"] = nationality
+                default_profile_data["birth_country"] = birth_country
                 default_profile_data["date_of_birth"] = date_of_birth
                 default_profile_data["current_location"] = current_location
+                default_profile_data["astrology_data"] = astrology_data
+                default_profile_data["future_self_description"] = future_self_description
+                default_profile_data["preferred_tone"] = preferred_tone
+                default_profile_data["mind_space"] = mind_space
+                default_profile_data["future_proud"] = future_proud
+                default_profile_data["most_yourself"] = most_yourself
+                default_profile_data["low_moments"] = low_moments
+                default_profile_data["spiral_reminder"] = spiral_reminder
+                default_profile_data["change_goal"] = change_goal
+                default_profile_data["avoid_tendency"] = avoid_tendency
+                default_profile_data["feeling_description"] = feeling_description
+                default_profile_data["future_description"] = future_description
+                default_profile_data["future_age"] = future_age
+                default_profile_data["typical_day"] = typical_day
+                default_profile_data["accomplishment"] = accomplishment
+                default_profile_data["words_slang"] = words_slang
+                default_profile_data["message_preference"] = message_preference
+                default_profile_data["messaging_frequency"] = messaging_frequency
+                default_profile_data["emoji_usage_preference"] = emoji_usage_preference
+                default_profile_data["preferred_communication"] = preferred_communication
+                default_profile_data["communication_tone"] = communication_tone
+                default_profile_data["message_length"] = message_length
+                default_profile_data["emoji_usage"] = emoji_usage
+                default_profile_data["punctuation_style"] = punctuation_style
+                default_profile_data["use_slang"] = use_slang
+                default_profile_data["chat_sample"] = chat_sample
+                default_profile_data["common_phrases"] = common_phrases
+                
                 return default_profile_data # Return defaults if creation fails
         # This else block is no longer needed since we handle the no-data case above
         # Keeping it for defensive programming but simplified
@@ -179,14 +600,16 @@ app = FastAPI()
 origins = [
     "http://localhost",
     "http://localhost:*",
-    "http://localhost:54625",
+    "http://localhost:50962",
+    "http://127.0.0.1:*",
+    "*",  # Allow all origins for development
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["OPTIONS", "POST"], # Explicitly allow OPTIONS and POST
+        allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"], # Allow all common HTTP methods
     allow_headers=["*"], # Allows all headers, including Content-Type
 )
 
@@ -307,87 +730,73 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
     # Refresh profile after update to ensure we use the latest for the prompt
     user_profile = await get_or_create_user_style_profile(user_id, supabase) # Re-fetch or merge update_data into user_profile
 
-    # 4. Construct the prompt for Ollama, incorporating style
-    # Base prompt - can be further refined
-    # Extract communication style data from onboarding
-    communication_style = user_profile.get("communication_style", {})
-    user_name = user_profile.get("user_name", "")
+    # 4. Get conversation context for natural flow
+    conversation_context = await get_conversation_context(user_id, supabase)
     
-    prompt_template = (
-        "You are an AI assistant embodying the user's 'Future Self'. "
-        "Your goal is to communicate in a way that reflects the user's current communication style, "
-        "blended with aspirational qualities. Analyze the user's message and the provided style profile "
-        "to guide your response. Be supportive, insightful, and slightly aspirational.\n\n"
-        "User Information:\n"
-        "- Name: {user_name}\n"
-        "- Nationality: {nationality}\n"
-        "- Date of Birth: {date_of_birth}\n"
-        "- Current Location: {current_location}\n\n"
-        "User's Current Style Profile:\n"
-        "- Average Sentence Length: {avg_sentence_length}\n"
-        "- Emoji Frequency: {emoji_frequency} (0=none, 1=high)\n"
-        "- Common Emojis: {common_emojis}\n"
-        "- Common Slang/Informal: {common_slang}\n"
-        "- Formality Score: {formality_score} (0=very informal, 1=very formal)\n"
-        "- Average Pitch (from voice, if available): {avg_pitch}\n"
-        "- Voice Energy (from voice, if available): {voice_energy}\n\n"
-        "Communication Style from Onboarding:\n"
-        "- Message Length Preference: {message_length}\n"
-        "- Emoji Usage Level: {emoji_usage}/5\n"
-        "- Punctuation Style: {punctuation_style}\n"
-        "- Uses Casual Slang: {use_slang}\n"
-        "- Common Phrases: {common_phrases}\n"
-        "- Chat Sample: {chat_sample}\n"
-        "- Typical Response Style: {typical_response}\n\n"
-        "Aspirational Qualities to gently weave in: Clarity, confidence, wisdom, positivity.\n\n"
-        "User's message: '{user_message}'\n\n"
-        "Future Self AI, respond to the user{name_instruction}, subtly mimicking their style while embodying their future self:")
-
-    # Fill the prompt template with style data
-    # Use defaults if some profile attributes are None
-    # Determine name instruction based on whether user name is available
-    name_instruction = f" (address them by name: {user_name})" if user_name and user_name.strip() else ""
+    # 5. Generate weather and events context if location is available
+    weather_events_context = {}
+    current_location = user_profile.get('current_location', '')
+    if current_location:
+        try:
+            weather_service = WeatherEventsService()
+            weather_events_context = await weather_service.get_location_context(current_location)
+            print(f"Generated weather/events context for {current_location}")
+        except Exception as e:
+            print(f"Error generating weather/events context: {e}")
+            weather_events_context = {}
     
-    prompt = prompt_template.format(
-        user_name=user_name if user_name and user_name.strip() else "Not provided",
-        nationality=user_profile.get("nationality", "Not provided") if user_profile.get("nationality") and user_profile.get("nationality").strip() else "Not provided",
-        date_of_birth=user_profile.get("date_of_birth", "Not provided") if user_profile.get("date_of_birth") else "Not provided",
-        current_location=user_profile.get("current_location", "Not provided") if user_profile.get("current_location") and user_profile.get("current_location").strip() else "Not provided",
-        name_instruction=name_instruction,
-        avg_sentence_length=user_profile.get("avg_sentence_length", "N/A"),
-        emoji_frequency=user_profile.get("emoji_frequency", "N/A"),
-        common_emojis=', '.join(user_profile.get("common_emojis", [])) if user_profile.get("common_emojis") else "N/A",
-        common_slang=', '.join(user_profile.get("common_slang", [])) if user_profile.get("common_slang") else "N/A",
-        formality_score=user_profile.get("formality_score", "N/A"),
-        avg_pitch=user_profile.get("avg_pitch", "N/A"), # Will be N/A for text-only interactions
-        voice_energy=user_profile.get("voice_energy", "N/A"), # Will be N/A for text-only interactions
-        # Communication style from onboarding
-        message_length=communication_style.get("message_length", "N/A"),
-        emoji_usage=communication_style.get("emoji_usage", "N/A"),
-        punctuation_style=communication_style.get("punctuation_style", "N/A"),
-        use_slang=communication_style.get("use_slang", "N/A"),
-        common_phrases=communication_style.get("common_phrases", "N/A"),
-        chat_sample=communication_style.get("chat_sample", "N/A"),
-        typical_response=communication_style.get("typical_response", "N/A"),
-        user_message=user_message
-    )
+    # 6. Create natural future self prompt with weather/events context
+    prompt = create_future_self_prompt(user_message, user_profile, conversation_context, weather_events_context)
 
-    print(f"Generated prompt for Ollama:\n{prompt}")
+    print(f"Generated natural conversation prompt for Ollama:\n{prompt}")
 
     # 5. Call Ollama (Mistral AI)
     ollama_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/api/generate")
     ollama_model = os.environ.get("OLLAMA_MODEL", "mistral:7b")
 
     try:
-        response = requests.post(
-            ollama_url,
-            json={"model": ollama_model, "prompt": prompt, "stream": False},
-            timeout=60 # Increased timeout for potentially longer generation
-        )
-        response.raise_for_status() # Raise an exception for HTTP errors
-        ai_response_text = response.json().get("response", "").strip()
+        # Retry logic for Ollama API calls
+        max_retries = 3
+        retry_delay = 5  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    ollama_url,
+                    json={"model": ollama_model, "prompt": prompt, "stream": False},
+                    timeout=180  # Increased timeout to 3 minutes for longer generation
+                )
+                response.raise_for_status() # Raise an exception for HTTP errors
+                ai_response_text = response.json().get("response", "").strip()
+                break  # Success, exit retry loop
+            except requests.exceptions.Timeout as timeout_error:
+                print(f"Ollama timeout on attempt {attempt + 1}/{max_retries}: {timeout_error}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    raise HTTPException(
+                        status_code=503, 
+                        detail="Ollama service is taking too long to respond. Please try again later or check if Ollama is running properly."
+                    )
+            except requests.exceptions.ConnectionError as conn_error:
+                print(f"Ollama connection error on attempt {attempt + 1}/{max_retries}: {conn_error}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    raise HTTPException(
+                        status_code=503, 
+                        detail="Cannot connect to Ollama service. Please ensure Ollama is running on localhost:11434."
+                    )
+        
+        # 6. Humanize the response to remove AI-speak patterns
+        user_name = user_profile.get("user_name", "")
+        ai_response_text = humanize_response(ai_response_text, user_name)
 
-        # 6. Store the AI's response in chat_messages (optional, but good for history)
+        # 7. Store the AI's response in chat_messages (optional, but good for history)
         try:
             supabase.table("chat_messages").insert({
                 "user_id": user_id,

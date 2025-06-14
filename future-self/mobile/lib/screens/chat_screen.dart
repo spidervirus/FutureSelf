@@ -28,6 +28,7 @@ class ChatScreenState extends State<ChatScreen> {
   
   String _preferredCommunicationMethod = 'chat';
   bool _isLoadingPreferences = true;
+  bool _isLoadingHistory = false; // Declare _isLoadingHistory
   
   Timer? _recordingTimer;
   int _recordingDuration = 0;
@@ -57,7 +58,7 @@ class ChatScreenState extends State<ChatScreen> {
             .from('chat_messages')
             .select('content, created_at, author_id')
             .eq('user_id', user.id)
-            .order('created_at', ascending: false);
+            .order('created_at', ascending: true); // Changed to true
 
         if (mounted) {
           final Map<String, Map<String, dynamic>> groupedChats = {};
@@ -65,24 +66,22 @@ class ChatScreenState extends State<ChatScreen> {
             final messageContent = msgData['content'] as String;
             final createdAt = DateTime.parse(msgData['created_at']);
             final dateStr = createdAt.toLocal().toString().substring(0, 10);
+            final authorId = msgData['author_id'] as String;
 
-            if (!groupedChats.containsKey(dateStr) && msgData['author_id'] == user.id) {
+            // If it's a user message and we haven't recorded a title for this day yet
+            if (authorId == user.id && !groupedChats.containsKey(dateStr)) {
               groupedChats[dateStr] = {
-                'id': msgData['created_at'], 
+                'id': msgData['created_at'], // Timestamp of the first user message of the day
                 'title': messageContent.length > 30 ? '${messageContent.substring(0, 27)}...' : messageContent,
                 'subtitle': 'Chat from $dateStr',
                 'data': msgData 
               };
-            } else if (groupedChats.containsKey(dateStr) && msgData['author_id'] == user.id) {
-              if (groupedChats[dateStr]!['data']['author_id'] != user.id) {
-                 groupedChats[dateStr]!['title'] = messageContent.length > 30 ? '${messageContent.substring(0, 27)}...' : messageContent;
-                 groupedChats[dateStr]!['data'] = msgData; 
-              }
             }
           }
           if (mounted) {
             setState(() {
               _pastChatSessions = groupedChats.values.toList();
+              // Sort by the 'id' (timestamp of the title message) descending to show newest sessions first
               _pastChatSessions.sort((a, b) => (b['id'] as String).compareTo(a['id'] as String));
               _isLoadingPastChats = false;
             });
@@ -95,13 +94,13 @@ class ChatScreenState extends State<ChatScreen> {
           _isLoadingPastChats = false;
         });
         // Optionally show a snackbar or log error
-        print('Error fetching past chat sessions for drawer: $e');
+        debugPrint('Error fetching past chat sessions for drawer: $e');
       }
     }
   }
 
   void _navigateToPastChat(Map<String, dynamic> chatData) {
-    print('Navigate to past chat: ${chatData['title']}');
+    debugPrint('Navigate to past chat: ${chatData['title']}');
     Navigator.pop(context); // Close the drawer
     final String fullTimestamp = chatData['id'] as String;
     final String chatDate = fullTimestamp.substring(0, 10);
@@ -121,19 +120,27 @@ class ChatScreenState extends State<ChatScreen> {
     final arguments = ModalRoute.of(context)?.settings.arguments as Map?;
 
     if (arguments?['newChat'] == true) {
+      // Explicitly starting a new chat - clear messages and don't load history
       if (mounted) {
         setState(() {
           _messages.clear();
         });
       }
       _isInitialLoad = false; // A new chat means initial load (of history) is not needed
-    } else if (_isInitialLoad) {
-      // Load history only on initial load and if not a 'newChat'
+    } else if (_isInitialLoad && arguments == null) {
+      // Only load history on initial load if no arguments are passed
+      // This prevents loading history when refreshing or navigating without explicit newChat
       _loadMessageHistory();
       _isInitialLoad = false;
+    } else {
+      // For any other case (refresh, navigation without arguments), start fresh
+      if (mounted && _messages.isEmpty) {
+        setState(() {
+          _messages.clear(); // Ensure we start with a clean slate
+        });
+      }
+      _isInitialLoad = false;
     }
-    // If it's not a new chat and not the initial load (e.g. a refresh after initial load),
-    // do nothing, preserving the current state of _messages.
   }
 
   // Add this method to fetch user preferences
@@ -179,16 +186,17 @@ class ChatScreenState extends State<ChatScreen> {
     if (mounted) {
       setState(() {
         _isLoadingHistory = true;
+        _messages.clear(); // Clear messages when loading starts
       });
     }
 
     // Clear messages only if we are loading a new set (either general history or a specific chat)
     // This was moved from _navigateToPastChat to here to ensure it happens before any load.
-    if (mounted) {
-      setState(() {
-        // Consider adding a loading indicator for messages if it's a long operation
-      });
-    }
+    // if (mounted) { // This block is now redundant due to the change above
+    //   setState(() {
+    //     // Consider adding a loading indicator for messages if it's a long operation
+    //   });
+    // }
     try {
       final user = supabase.auth.currentUser;
       if (user != null) {
@@ -201,7 +209,7 @@ class ChatScreenState extends State<ChatScreen> {
         // If it IS null, we load the general history.
         // This is a placeholder for more specific logic.
 
-        SupabaseQueryBuilder query = supabase
+        var query = supabase // Use 'var' or the specific builder type
             .from('chat_messages')
             .select()
             .eq('user_id', user.id);
@@ -215,6 +223,7 @@ class ChatScreenState extends State<ChatScreen> {
               .lt('created_at', endDate.toIso8601String());
         }
 
+        // The 'order' method returns a PostgrestTransformBuilder, so we can chain 'limit' after it.
         final response = await query
             .order('created_at', ascending: false)
             .limit(specificChatDate == null ? 50 : 100); // Load more if it's a specific chat
@@ -232,13 +241,13 @@ class ChatScreenState extends State<ChatScreen> {
         
         if (mounted) {
           setState(() {
-            _messages.clear(); // Clear previous messages before loading new/history
+            // _messages.clear(); // Already cleared when _isLoadingHistory was set to true
             _messages.insertAll(0, loadedMessages.reversed);
           });
         }
       }
     } catch (e) {
-      print('Error loading message history: $e');
+      debugPrint('Error loading message history: $e');
       if (mounted) {
         // Optionally, set an error state or show a snackbar
       }
@@ -265,7 +274,7 @@ class ChatScreenState extends State<ChatScreen> {
         });
       }
     } catch (e) {
-      print('Error saving message to database: $e');
+      debugPrint('Error saving message to database: $e');
     }
   }
 
@@ -454,7 +463,7 @@ class ChatScreenState extends State<ChatScreen> {
     final user = supabase.auth.currentUser;
     
     if (user == null) {
-      print('Error: No authenticated user found for speech synthesis');
+      debugPrint('Error: No authenticated user found for speech synthesis');
       return;
     }
     
@@ -496,7 +505,7 @@ class ChatScreenState extends State<ChatScreen> {
         _isPlayingAudio = false;
         _currentlyPlayingMessageId = null;
       });
-      print('Error synthesizing speech: $e');
+      debugPrint('Error synthesizing speech: $e');
     }
   }
 
@@ -542,7 +551,7 @@ class ChatScreenState extends State<ChatScreen> {
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.1),
+                color: Colors.black.withValues(alpha: 0.1),
                 blurRadius: 4.0,
                 offset: const Offset(0, 2),
               ),
@@ -568,7 +577,7 @@ class ChatScreenState extends State<ChatScreen> {
                         _currentlyPlayingMessageId == message.id && _isPlayingAudio
                             ? Icons.pause_circle
                             : Icons.play_circle,
-                        color: textColor.withOpacity(0.7),
+                        color: textColor.withValues(alpha: 0.7),
                         size: 20.0,
                       ),
                       onPressed: () {
@@ -585,7 +594,7 @@ class ChatScreenState extends State<ChatScreen> {
                     Text(
                       _formatTimestamp(message.createdAt!),
                       style: TextStyle(
-                        color: textColor.withOpacity(0.7),
+                        color: textColor.withValues(alpha: 0.7),
                         fontSize: 12.0,
                       ),
                     ),
@@ -595,7 +604,7 @@ class ChatScreenState extends State<ChatScreen> {
                 Text(
                   _formatTimestamp(message.createdAt!),
                   style: TextStyle(
-                    color: textColor.withOpacity(0.7),
+                    color: textColor.withValues(alpha: 0.7),
                     fontSize: 12.0,
                   ),
                 ),
@@ -654,7 +663,7 @@ class ChatScreenState extends State<ChatScreen> {
           Container(
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: _isRecording ? Colors.red.withOpacity(0.1) : null,
+              color: _isRecording ? Colors.red.withValues(alpha: 0.1) : null,
             ),
             child: IconButton(
               iconSize: _isRecording ? 32.0 : 24.0,
@@ -724,10 +733,10 @@ class ChatScreenState extends State<ChatScreen> {
             _audioBytes.addAll(audioChunk);
           },
           onDone: () {
-            print('Recording stream done');
+            debugPrint('Recording stream done');
           },
           onError: (e) {
-            print('Recording stream error: $e');
+            debugPrint('Recording stream error: $e');
             if (mounted) {
               setState(() {
                 _isRecording = false;
@@ -741,10 +750,10 @@ class ChatScreenState extends State<ChatScreen> {
           _isRecording = true;
         });
       } else {
-        print('Recording permission not granted');
+        debugPrint('Recording permission not granted');
       }
     } catch (e) {
-      print('Error starting recording: $e');
+      debugPrint('Error starting recording: $e');
       if (mounted) {
         setState(() {
           _isRecording = false;
@@ -788,7 +797,7 @@ class ChatScreenState extends State<ChatScreen> {
         _isRecording = false;
         _recordingDuration = 0;
       });
-      print('Error stopping recording: $e');
+      debugPrint('Error stopping recording: $e');
     }
   }
 

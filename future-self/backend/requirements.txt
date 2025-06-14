@@ -1,22 +1,15 @@
 # FastAPI Backend Dependencies for Future Self App
-fastapi
-uvicorn
-requests
-supabase
-python-dotenv # For environment variables
-whisper-openai # For OpenAI Whisper
-TTS # For Coqui TTS
-pyogg
-# For style analysis
-spacy
-librosa
-numpy # Often a dependency for librosa/spacy, good to have explicitly
+# Core dependencies with specific versions below
+
+# For astrology integration
+pyswisseph # Swiss Ephemeris for precise astrological calculations
+pytz # For timezone handling in astrology
 
 # After installing spacy, you'll need to download a model, e.g.:
 # python -m spacy download en_core_web_sm
 
 # Core FastAPI framework
-fastapi==0.104.1
+fastapi[all]==0.104.1
 uvicorn[standard]==0.24.0
 
 # HTTP client for API requests
@@ -31,19 +24,13 @@ whisper==1.1.10
 TTS==0.22.0
 pyogg==0.6.14a1
 
-# Audio file handling
-wave
-struct
-base64
-tempfile
-shutil
-subprocess
+# Audio file handling (built-in modules don't need to be listed)
+# wave, struct, base64, tempfile, shutil, subprocess are built-in
 
 # Data handling
 pydantic==2.5.0
 
-# CORS middleware
-fastapi[all]==0.104.1
+# CORS middleware (included in fastapi[all])
 
 # Environment variables
 python-dotenv==1.0.0

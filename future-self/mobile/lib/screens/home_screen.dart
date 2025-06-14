@@ -91,9 +91,104 @@ class HomeScreenState extends State<HomeScreen> { // Make public
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      drawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            DrawerHeader(
+              decoration: BoxDecoration(
+                color: Theme.of(context).primaryColor,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const CircleAvatar(
+                    radius: 30,
+                    backgroundColor: Colors.white,
+                    child: Icon(Icons.person, size: 30, color: Colors.deepPurple),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    _userName ?? 'User',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Text(
+                    'Future Self App',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.home),
+              title: const Text('Home'),
+              onTap: () => Navigator.pop(context),
+            ),
+            ListTile(
+              leading: const Icon(Icons.chat),
+              title: const Text('New Chat'),
+              onTap: () {
+                Navigator.pop(context);
+                _navigateToChat();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.history),
+              title: const Text('Past Chats'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.pushNamed(context, '/pastChats');
+              },
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.person),
+              title: const Text('Profile'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.pushNamed(context, '/profile');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.settings),
+              title: const Text('Settings'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.pushNamed(context, '/settings');
+              },
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Sign Out'),
+              onTap: () {
+                Navigator.pop(context);
+                _signOut();
+              },
+            ),
+          ],
+        ),
+      ),
       appBar: AppBar(
         title: const Text('Future Self Home'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.person),
+            onPressed: () => Navigator.pushNamed(context, '/profile'),
+            tooltip: 'Profile',
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => Navigator.pushNamed(context, '/settings'),
+            tooltip: 'Settings',
+          ),
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: _signOut,

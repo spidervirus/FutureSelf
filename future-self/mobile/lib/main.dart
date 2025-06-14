@@ -5,7 +5,9 @@ import 'screens/auth/sign_up_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/user_onboarding_screen.dart';
 import 'screens/chat_screen.dart';
-import 'screens/past_chats_screen.dart'; // Add this import
+import 'screens/past_chats_screen.dart';
+import 'screens/profile_screen.dart';
+import 'screens/settings_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized(); // Ensure widgets are initialized
@@ -26,6 +28,10 @@ class MyApp extends StatelessWidget {
       title: 'Future-Self',
       theme: ThemeData(
         primarySwatch: Colors.deepPurple,
+        fontFamily: 'NotoSans',
+        textTheme: const TextTheme().apply(
+          fontFamilyFallback: ['NotoSans', 'NotoColorEmoji', 'NotoSansSymbols'],
+        ),
       ),
       initialRoute: '/', // Start with the root route
       routes: {
@@ -35,7 +41,9 @@ class MyApp extends StatelessWidget {
         '/onboarding': (context) => const UserOnboardingScreen(),
         '/home': (context) => const HomeScreen(),
         '/chat': (context) => const ChatScreen(),
-        '/pastChats': (context) => const PastChatsScreen(), // Add this route
+        '/pastChats': (context) => const PastChatsScreen(),
+        '/profile': (context) => const ProfileScreen(),
+        '/settings': (context) => const SettingsScreen(),
       },
     );
   }

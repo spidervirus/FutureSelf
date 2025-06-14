@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
+// Removed unused import: import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
 
 class PastChatsScreen extends StatefulWidget {
   const PastChatsScreen({super.key});
@@ -87,7 +87,7 @@ class _PastChatsScreenState extends State<PastChatsScreen> {
     // This part needs to be implemented based on how ChatScreen can load specific chats
     // For example, by passing a message ID, a date range, or a session ID if you have one.
     // Navigator.pushReplacementNamed(context, '/chat', arguments: {'chatId': chatData['id']});
-    print('Navigate to chat: ${chatData['title']}');
+    debugPrint('Navigate to chat: ${chatData['title']}');
      Navigator.pop(context); // Go back to chat screen for now
      // Potentially, you'd want to pass arguments to ChatScreen to load this specific chat
   }
