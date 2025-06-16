@@ -614,13 +614,13 @@ app.add_middleware(
 )
 
 # --- Supabase Initialization ---
-# TODO: Replace with your actual Supabase URL and Service Key
-# It's highly recommended to use environment variables for these!
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://hsdxqhfyjbnxuaopwpil.supabase.co")
-SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhzZHhxaGZ5amJueHVhb3B3cGlsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0ODI1ODUxMCwiZXhwIjoyMDYzODM0NTEwfQ.g-gMw6340j7hL-U_LA95q7OFsGh0Lb_PxkQuZ6U5eXk")
+# Get Supabase credentials from environment variables
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 
-if SUPABASE_URL == "https://hsdxqhfyjbnxuaopwpil.supabase.co" or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" in SUPABASE_SERVICE_KEY:
-    print("WARNING: Supabase URL or Service Key using hardcoded values. Consider using environment variables.")
+if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+    print("ERROR: Supabase URL or Service Key not found in environment variables. Please set them in your .env file.")
+    sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
@@ -751,8 +751,12 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
     print(f"Generated natural conversation prompt for Ollama:\n{prompt}")
 
     # 5. Call Ollama (Mistral AI)
-    ollama_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/api/generate")
+    ollama_url = os.environ.get("OLLAMA_API_URL")
     ollama_model = os.environ.get("OLLAMA_MODEL", "mistral:7b")
+    
+    if not ollama_url:
+        print("ERROR: Ollama API URL not found in environment variables. Please set it in your .env file.")
+        return {"error": "Ollama API URL not configured"}
 
     try:
         # Retry logic for Ollama API calls
