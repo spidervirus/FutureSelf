@@ -49,39 +49,52 @@ except OSError:
         nlp = None # Handle case where model loading fails
 
 # --- Style Analyzer Functions --- 
-def analyze_text_style(text: str):
-    if not nlp or not text:
-        return {
-            "avg_sentence_length": None,
-            "emoji_frequency": None,
-            "common_emojis": [],
-            "common_slang": [],
-            "formality_score": None,
-        }
-    doc = nlp(text)
+# Remove the analyze_text_style function since it's only used for user_style_profiles
+# def analyze_text_style(text: str):
+#     if not nlp or not text:
+#         return {
+#             "avg_sentence_length": None,
+#             "emoji_frequency": None,
+#             "common_emojis": [],
+#             "common_slang": [],
+#             "formality_score": None,
+#         }
+#     doc = nlp(text)
 
-    sentences = list(doc.sents)
-    avg_sentence_length = np.mean([len(sent) for sent in sentences]) if sentences else 0
+#     sentences = list(doc.sents)
+#     avg_sentence_length = np.mean([len(sent) for sent in sentences]) if sentences else 0
 
-    emojis = re.findall(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]', text)
-    emoji_frequency = len(emojis) / len(doc) if len(doc) > 0 else 0
-    common_emojis = list(set(emojis))
+#     emojis = re.findall(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]', text)
+#     emoji_frequency = len(emojis) / len(doc) if len(doc) > 0 else 0
+#     common_emojis = list(set(emojis))
 
-    # Basic slang detection (example)
-    slang_terms = [token.text.lower() for token in doc if token.text.lower() in ["lol", "brb", "omg", "btw", "imo", "thx", "np"]]
+#     # Basic slang detection (example)
+#     slang_terms = [token.text.lower() for token in doc if token.text.lower() in ["lol", "brb", "omg", "btw", "imo", "thx", "np"]]
 
-    num_contractions = len([token for token in doc if "'" in token.text and token.pos_ not in ['PUNCT', 'SYM']])
-    # Heuristic: more contractions might mean less formal. Normalize by number of tokens.
-    # This is a very rough heuristic.
-    formality_score = 1.0 - (num_contractions / len(doc)) if len(doc) > 0 else 0.5 
-
-    return {
-        "avg_sentence_length": round(float(avg_sentence_length), 2) if avg_sentence_length is not None else None,
-        "emoji_frequency": round(float(emoji_frequency), 3) if emoji_frequency is not None else None,
-        "common_emojis": common_emojis[:5],
-        "common_slang": list(set(slang_terms))[:5],
-        "formality_score": round(float(formality_score), 2) if formality_score is not None else None,
-    }
+#     # Simple formality score based on POS tags
+#     formality_indicators = {
+#         "formal": ["NOUN", "ADJ", "ADP", "DET", "CCONJ"],  # More formal parts of speech
+#         "informal": ["INTJ", "PART", "PRON"]  # More informal parts of speech
+#     }
+    
+#     pos_counts = {pos: 0 for pos in set(formality_indicators["formal"]) | set(formality_indicators["informal"])}
+#     for token in doc:
+#         if token.pos_ in pos_counts:
+#             pos_counts[token.pos_] += 1
+    
+#     formal_count = sum(pos_counts[pos] for pos in formality_indicators["formal"])
+#     informal_count = sum(pos_counts[pos] for pos in formality_indicators["informal"])
+#     total_count = formal_count + informal_count
+    
+#     formality_score = formal_count / total_count if total_count > 0 else 0.5  # Default to neutral
+    
+#     return {
+#         "avg_sentence_length": round(float(avg_sentence_length), 2) if avg_sentence_length is not None else None,
+#         "emoji_frequency": round(float(emoji_frequency), 4) if emoji_frequency is not None else None,
+#         "common_emojis": common_emojis[:5],  # Limit to top 5
+#         "common_slang": slang_terms[:5],  # Limit to top 5
+#         "formality_score": round(float(formality_score), 2) if formality_score is not None else None,
+#     }
 
 def analyze_voice_style(audio_file_path: str):
     try:
@@ -365,234 +378,6 @@ Be natural. Be authentic. Be the wise, loving version of {name_part} who wants t
     return base_prompt + guidance
 
 # --- Helper function to get or create user style profile --- #
-async def get_or_create_user_style_profile(user_id: str, supabase_client: Client) -> dict:
-    try:
-        # Try to fetch existing profile
-        profile_response = supabase_client.table("user_style_profiles").select("*").eq("user_id", user_id).execute()
-        
-        # Also fetch all onboarding data from users table
-        user_response = supabase_client.table("users").select("""
-            communication_style, name, nationality, birth_country, date_of_birth, current_location,
-            future_self_description, preferred_tone, mind_space, future_proud, most_yourself,
-            low_moments, spiral_reminder, change_goal, avoid_tendency, feeling_description,
-            future_description, future_age, typical_day, accomplishment, words_slang,
-            message_preference, messaging_frequency, emoji_usage_preference,
-            preferred_communication, communication_tone, message_length, emoji_usage,
-            punctuation_style, use_slang, chat_sample, common_phrases
-        """).eq("id", user_id).execute()
-        # Extract all user data from the response
-        user_data = user_response.data[0] if user_response.data else {}
-        communication_style = user_data.get("communication_style", {})
-        user_name = user_data.get("name", "")
-        nationality = user_data.get("nationality", "")
-        birth_country = user_data.get("birth_country", "")
-        date_of_birth = user_data.get("date_of_birth", "")
-        current_location = user_data.get("current_location", "")
-        
-        # Generate astrology data if birth date and country are available
-        astrology_data = {}
-        if date_of_birth and birth_country:
-            try:
-                birth_date = datetime.fromisoformat(date_of_birth.replace('Z', '+00:00')) if isinstance(date_of_birth, str) else date_of_birth
-                if isinstance(birth_date, str):
-                    birth_date = datetime.strptime(birth_date, '%Y-%m-%d')
-                birth_chart = astrology_service.generate_birth_chart(birth_date, birth_country)
-                astrology_insights = astrology_service.get_astrological_insights(birth_chart)
-                astrology_data = {
-                    'birth_chart': birth_chart,
-                    'insights': astrology_insights
-                }
-            except Exception as e:
-                print(f"Error generating astrology data for user {user_id}: {e}")
-                astrology_data = {'error': str(e)}
-        
-        # Extract from nested future_self_description JSON
-        future_self_description_data = user_data.get("future_self_description", {})
-        future_self_description = str(future_self_description_data) if future_self_description_data else ""
-        preferred_tone = user_data.get("preferred_tone", "")
-        mind_space = future_self_description_data.get("mind_space", "") if isinstance(future_self_description_data, dict) else ""
-        future_proud = future_self_description_data.get("future_proud", "") if isinstance(future_self_description_data, dict) else ""
-        most_yourself = future_self_description_data.get("most_yourself", "") if isinstance(future_self_description_data, dict) else ""
-        low_moments = future_self_description_data.get("low_moments", "") if isinstance(future_self_description_data, dict) else ""
-        spiral_reminder = future_self_description_data.get("spiral_reminder", "") if isinstance(future_self_description_data, dict) else ""
-        
-        # Growth and challenges data from nested JSON
-        change_goal = future_self_description_data.get("change_goal", "") if isinstance(future_self_description_data, dict) else ""
-        avoid_tendency = future_self_description_data.get("avoid_tendency", "") if isinstance(future_self_description_data, dict) else ""
-        feeling_description = future_self_description_data.get("feeling_description", "") if isinstance(future_self_description_data, dict) else ""
-        
-        # Future vision data from nested JSON
-        future_description = future_self_description_data.get("future_description", "") if isinstance(future_self_description_data, dict) else ""
-        future_age = str(user_data.get("future_self_age_years", ""))  # Changed from "future_age" to "future_self_age_years"
-        typical_day = future_self_description_data.get("typical_day", "") if isinstance(future_self_description_data, dict) else ""
-        accomplishment = future_self_description_data.get("accomplishment", "") if isinstance(future_self_description_data, dict) else ""
-        
-        # Communication style data from nested JSON
-        words_slang = communication_style.get("words_slang", "") if isinstance(communication_style, dict) else ""
-        message_preference = communication_style.get("message_preference", "") if isinstance(communication_style, dict) else ""
-        messaging_frequency = communication_style.get("messaging_frequency", "") if isinstance(communication_style, dict) else ""
-        emoji_usage_preference = communication_style.get("emoji_usage_preference", "") if isinstance(communication_style, dict) else ""
-        preferred_communication = user_data.get("preferred_communication", "")
-        communication_tone = communication_style.get("communication_tone", "") if isinstance(communication_style, dict) else ""
-        message_length = communication_style.get("message_length", "") if isinstance(communication_style, dict) else ""
-        emoji_usage = communication_style.get("emoji_usage", 0) if isinstance(communication_style, dict) else 0
-        punctuation_style = communication_style.get("punctuation_style", "") if isinstance(communication_style, dict) else ""
-        use_slang = communication_style.get("use_slang", False) if isinstance(communication_style, dict) else False
-        chat_sample = communication_style.get("chat_sample", "") if isinstance(communication_style, dict) else ""
-        common_phrases = communication_style.get("common_phrases", "") if isinstance(communication_style, dict) else ""
-
-        if profile_response.data:
-            # Merge all onboarding data with existing profile
-            profile = profile_response.data[0]
-            profile["communication_style"] = communication_style
-            profile["user_name"] = user_name
-            profile["nationality"] = nationality
-            profile["birth_country"] = birth_country
-            profile["date_of_birth"] = date_of_birth
-            profile["current_location"] = current_location
-            profile["astrology_data"] = astrology_data
-            
-            # Add personal reflection data
-            profile["future_self_description"] = future_self_description
-            profile["preferred_tone"] = preferred_tone
-            profile["mind_space"] = mind_space
-            profile["future_proud"] = future_proud
-            profile["most_yourself"] = most_yourself
-            profile["low_moments"] = low_moments
-            profile["spiral_reminder"] = spiral_reminder
-            
-            # Add growth and challenges data
-            profile["change_goal"] = change_goal
-            profile["avoid_tendency"] = avoid_tendency
-            profile["feeling_description"] = feeling_description
-            
-            # Add future vision data
-            profile["future_description"] = future_description
-            profile["future_age"] = future_age
-            profile["typical_day"] = typical_day
-            profile["accomplishment"] = accomplishment
-            
-            # Add communication style data
-            profile["words_slang"] = words_slang
-            profile["message_preference"] = message_preference
-            profile["messaging_frequency"] = messaging_frequency
-            profile["emoji_usage_preference"] = emoji_usage_preference
-            profile["preferred_communication"] = preferred_communication
-            profile["communication_tone"] = communication_tone
-            profile["message_length"] = message_length
-            profile["emoji_usage"] = emoji_usage
-            profile["punctuation_style"] = punctuation_style
-            profile["use_slang"] = use_slang
-            profile["chat_sample"] = chat_sample
-            profile["common_phrases"] = common_phrases
-            
-            return profile
-        # Check if no data was returned (profile not found)
-        else:
-            print(f"No style profile found for user {user_id}, creating default.")
-            
-            # Proceed to create a default profile if not found
-            default_profile_data = {
-                "user_id": user_id,
-                "avg_sentence_length": None,
-                "emoji_frequency": None,
-                "formality_score": None,
-                "avg_pitch": None,
-                "voice_energy": None,
-            }
-            inserted_response = supabase_client.table("user_style_profiles").insert(default_profile_data).execute()
-            
-            if inserted_response.data:
-                profile = inserted_response.data[0]
-                profile["communication_style"] = communication_style
-                profile["user_name"] = user_name
-                profile["nationality"] = nationality
-                profile["birth_country"] = birth_country
-                profile["date_of_birth"] = date_of_birth
-                profile["current_location"] = current_location
-                profile["astrology_data"] = astrology_data
-                             
-                # Add all onboarding data to profile
-                profile["future_self_description"] = future_self_description
-                profile["preferred_tone"] = preferred_tone
-                profile["mind_space"] = mind_space
-                profile["future_proud"] = future_proud
-                profile["most_yourself"] = most_yourself
-                profile["low_moments"] = low_moments
-                profile["spiral_reminder"] = spiral_reminder
-                profile["change_goal"] = change_goal
-                profile["avoid_tendency"] = avoid_tendency
-                profile["feeling_description"] = feeling_description
-                profile["future_description"] = future_description
-                profile["future_age"] = future_age
-                profile["typical_day"] = typical_day
-                profile["accomplishment"] = accomplishment
-                profile["words_slang"] = words_slang
-                profile["message_preference"] = message_preference
-                profile["messaging_frequency"] = messaging_frequency
-                profile["emoji_usage_preference"] = emoji_usage_preference
-                profile["preferred_communication"] = preferred_communication
-                profile["communication_tone"] = communication_tone
-                profile["message_length"] = message_length
-                profile["emoji_usage"] = emoji_usage
-                profile["punctuation_style"] = punctuation_style
-                profile["use_slang"] = use_slang
-                profile["chat_sample"] = chat_sample
-                profile["common_phrases"] = common_phrases
-                
-                return profile
-            else:
-                print(f"Failed to create default profile for user {user_id}")
-                # Add all onboarding data to default profile
-                default_profile_data["communication_style"] = communication_style
-                default_profile_data["user_name"] = user_name
-                default_profile_data["nationality"] = nationality
-                default_profile_data["birth_country"] = birth_country
-                default_profile_data["date_of_birth"] = date_of_birth
-                default_profile_data["current_location"] = current_location
-                default_profile_data["astrology_data"] = astrology_data
-                default_profile_data["future_self_description"] = future_self_description
-                default_profile_data["preferred_tone"] = preferred_tone
-                default_profile_data["mind_space"] = mind_space
-                default_profile_data["future_proud"] = future_proud
-                default_profile_data["most_yourself"] = most_yourself
-                default_profile_data["low_moments"] = low_moments
-                default_profile_data["spiral_reminder"] = spiral_reminder
-                default_profile_data["change_goal"] = change_goal
-                default_profile_data["avoid_tendency"] = avoid_tendency
-                default_profile_data["feeling_description"] = feeling_description
-                default_profile_data["future_description"] = future_description
-                default_profile_data["future_age"] = future_age
-                default_profile_data["typical_day"] = typical_day
-                default_profile_data["accomplishment"] = accomplishment
-                default_profile_data["words_slang"] = words_slang
-                default_profile_data["message_preference"] = message_preference
-                default_profile_data["messaging_frequency"] = messaging_frequency
-                default_profile_data["emoji_usage_preference"] = emoji_usage_preference
-                default_profile_data["preferred_communication"] = preferred_communication
-                default_profile_data["communication_tone"] = communication_tone
-                default_profile_data["message_length"] = message_length
-                default_profile_data["emoji_usage"] = emoji_usage
-                default_profile_data["punctuation_style"] = punctuation_style
-                default_profile_data["use_slang"] = use_slang
-                default_profile_data["chat_sample"] = chat_sample
-                default_profile_data["common_phrases"] = common_phrases
-                
-                return default_profile_data # Return defaults if creation fails
-        # This else block is no longer needed since we handle the no-data case above
-        # Keeping it for defensive programming but simplified
-        # else:
-        #     print(f"Unexpected case: no data and no error for user {user_id}")
-        #     return default_profile_data
-
-    except Exception as e:
-        print(f"Error in get_or_create_user_style_profile for user {user_id}: {e}")
-        # Return a default structure on error to prevent crashes downstream
-        return {
-            "user_id": user_id, "avg_sentence_length": None, "emoji_frequency": None, 
-            "common_emojis": [], "common_slang": [], "formality_score": None, 
-            "avg_pitch": None, "voice_energy": None, "communication_style": {}, "user_name": ""
-        }
 
 app = FastAPI()
 
@@ -702,40 +487,28 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
     user_id = request.user_id
     user_message = request.message
 
-    # 1. Analyze user's text style
-    text_style_features = analyze_text_style(user_message)
-
-    # 2. Get or create user's style profile
-    user_profile = await get_or_create_user_style_profile(user_id, supabase)
-
-    # 3. Update style profile with new text features (consider averaging or a more sophisticated update)
-    # For simplicity, we'll update with the latest analysis. You might want to average over time.
-    update_data = {
-        "avg_sentence_length": text_style_features.get("avg_sentence_length") if text_style_features.get("avg_sentence_length") is not None else user_profile.get("avg_sentence_length"),
-        "emoji_frequency": text_style_features.get("emoji_frequency") if text_style_features.get("emoji_frequency") is not None else user_profile.get("emoji_frequency"),
-        "common_emojis": text_style_features.get("common_emojis") if text_style_features.get("common_emojis") else user_profile.get("common_emojis", []),
-        "common_slang": text_style_features.get("common_slang") if text_style_features.get("common_slang") else user_profile.get("common_slang", []),
-        "formality_score": text_style_features.get("formality_score") if text_style_features.get("formality_score") is not None else user_profile.get("formality_score"),
-    }
-
+    # Get user data from users table
     try:
-        supabase.table("user_style_profiles").update(update_data).eq("user_id", user_id).execute()
-        print(f"Successfully updated style profile for user {user_id}")
-    except APIError as e:
-        print(f"Error updating style profile for user {user_id}: {e.message}")
-        # Continue even if profile update fails, but log it
+        user_response = supabase.table("users").select("""
+            communication_style, name, nationality, birth_country, date_of_birth, current_location,
+            future_self_description, preferred_tone, mind_space, future_proud, most_yourself,
+            low_moments, spiral_reminder, change_goal, avoid_tendency, feeling_description,
+            future_description, future_age, typical_day, accomplishment, words_slang,
+            message_preference, messaging_frequency, emoji_usage_preference,
+            preferred_communication, communication_tone, message_length, emoji_usage,
+            punctuation_style, use_slang, chat_sample, common_phrases
+        """).eq("id", user_id).execute()
+        user_data = user_response.data[0] if user_response.data else {}
     except Exception as e:
-        print(f"An unexpected error occurred updating style profile for user {user_id}: {e}")
-
-    # Refresh profile after update to ensure we use the latest for the prompt
-    user_profile = await get_or_create_user_style_profile(user_id, supabase) # Re-fetch or merge update_data into user_profile
+        print(f"Error fetching user data for user {user_id}: {e}")
+        user_data = {}
 
     # 4. Get conversation context for natural flow
     conversation_context = await get_conversation_context(user_id, supabase)
     
     # 5. Generate weather and events context if location is available
     weather_events_context = {}
-    current_location = user_profile.get('current_location', '')
+    current_location = user_data.get('current_location', '')
     if current_location:
         try:
             weather_service = WeatherEventsService()
@@ -746,7 +519,7 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
             weather_events_context = {}
     
     # 6. Create natural future self prompt with weather/events context
-    prompt = create_future_self_prompt(user_message, user_profile, conversation_context, weather_events_context)
+    prompt = create_future_self_prompt(user_message, user_data, conversation_context, weather_events_context)
 
     print(f"Generated natural conversation prompt for Ollama:\n{prompt}")
 
@@ -902,22 +675,13 @@ async def transcribe_audio_file(request: Request, file: UploadFile = File(...), 
         voice_style_features = analyze_voice_style(tmp_wav_path)
         print(f"Voice style analysis: {voice_style_features}")
 
-        # Get or create user's style profile
-        user_profile = await get_or_create_user_style_profile(user_id, supabase)
+        # Fetch user data directly from users table
+        user_response = supabase.table("users").select("*").eq("id", user_id).execute()
+        user_data = user_response.data[0] if user_response.data else {}
 
-        # Update style profile with new voice features
-        voice_update_data = {
-            "avg_pitch": voice_style_features.get("avg_pitch") if voice_style_features.get("avg_pitch") is not None else user_profile.get("avg_pitch"),
-            "voice_energy": voice_style_features.get("voice_energy") if voice_style_features.get("voice_energy") is not None else user_profile.get("voice_energy"),
-        }
-
-        try:
-            supabase.table("user_style_profiles").update(voice_update_data).eq("user_id", user_id).execute()
-            print(f"Successfully updated voice style profile for user {user_id}")
-        except APIError as e:
-            print(f"Error updating voice style profile for user {user_id}: {e.message}")
-        except Exception as e:
-            print(f"An unexpected error occurred updating voice style profile for user {user_id}: {e}")
+        # No need to update user_style_profiles table anymore
+        # Just log the voice analysis results
+        print(f"Voice analysis complete for user {user_id}")
 
         return TranscriptionResponse(transcribed_text=transcribed_text)
 
@@ -938,13 +702,18 @@ async def synthesize_speech(request: SynthesisRequest = Body(...)):
     user_id = request.user_id
     text_to_synthesize = request.text
 
-    # Get user's style profile for potential TTS customization
-    user_profile = await get_or_create_user_style_profile(user_id, supabase)
-    
+    # Get user data for potential TTS customization
+    try:
+        user_response = supabase.table("users").select("""
+            communication_style, name, nationality, birth_country, date_of_birth, current_location
+        """).eq("id", user_id).execute()
+        user_data = user_response.data[0] if user_response.data else {}
+        print(f"User {user_id} data retrieved for TTS customization")
+    except Exception as e:
+        print(f"Error fetching user data for TTS customization: {e}")
+        user_data = {}
+
     # Log how we could use style features for TTS (current Coqui model limitations)
-    avg_pitch = user_profile.get("avg_pitch")
-    voice_energy = user_profile.get("voice_energy")
-    print(f"User {user_id} style profile - Avg Pitch: {avg_pitch}, Voice Energy: {voice_energy}")
     print("Note: Current TTS model doesn't support dynamic pitch/energy adjustment. Consider voice cloning for future versions.")
 
     if not tts_model:
