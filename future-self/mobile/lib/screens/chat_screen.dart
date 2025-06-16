@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:record/record.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
+
+import '../services/api_service.dart';
+import '../services/api_exception.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -23,8 +23,7 @@ class ChatScreenState extends State<ChatScreen> {
   final _recorder = AudioRecorder();
   StreamSubscription<Uint8List>? _audioStreamSubscription;
   final List<int> _audioBytes = [];
-  final AudioPlayer _audioPlayer = AudioPlayer();
-  final String backendUrl = 'http://localhost:8000';
+  final ApiService _apiService = ApiService();
   
   String _preferredCommunicationMethod = 'chat';
   bool _isLoadingPreferences = true;
@@ -32,8 +31,6 @@ class ChatScreenState extends State<ChatScreen> {
   
   Timer? _recordingTimer;
   int _recordingDuration = 0;
-  bool _isPlayingAudio = false;
-  String? _currentlyPlayingMessageId;
 
   List<Map<String, dynamic>> _pastChatSessions = [];
   bool _isLoadingPastChats = true;
@@ -44,7 +41,7 @@ class ChatScreenState extends State<ChatScreen> {
     super.initState();
     _loadUserPreferences();
     _fetchPastChatSessions();
-  }
+   }
 
   Future<void> _fetchPastChatSessions() async {
     if (!mounted) return;
@@ -283,7 +280,6 @@ class ChatScreenState extends State<ChatScreen> {
     _messageController.dispose();
     _recorder.dispose();
     _audioStreamSubscription?.cancel();
-    _audioPlayer.dispose();
     _recordingTimer?.cancel();
     super.dispose();
   }
@@ -315,75 +311,75 @@ class ChatScreenState extends State<ChatScreen> {
       _saveMessageToDatabase(userMessage);
       _messageController.clear();
 
-      final url = Uri.parse('$backendUrl/chat');
-
       try {
-        final response = await http.post(
-          url,
-          headers: <String, String>{
-            'Content-Type': 'application/json; charset=UTF-8',
-          },
-          body: jsonEncode(<String, String>{
-            'message': text,
-            'user_id': user.id, // Ensure user.id is passed
-          }),
+        final aiResponse = await _apiService.sendMessage(text, user.id);
+        final aiResponseContent = aiResponse['message'] as String;
+
+        final aiMessage = types.TextMessage(
+          author: types.User(id: 'future_self'),
+          createdAt: DateTime.now().millisecondsSinceEpoch,
+          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          text: aiResponseContent,
         );
-
-        if (response.statusCode == 200) {
-          final responseData = jsonDecode(response.body);
-          final aiResponseContent = responseData['response'];
-
-          final aiMessage = types.TextMessage(
-            author: types.User(id: 'future_self'),
-            createdAt: DateTime.now().millisecondsSinceEpoch,
-            id: DateTime.now().millisecondsSinceEpoch.toString(),
-            text: aiResponseContent,
-          );
+        if (mounted) {
           setState(() {
             _messages.add(aiMessage);
           });
-          _saveMessageToDatabase(aiMessage);
+        }
+        _saveMessageToDatabase(aiMessage);
 
-          await _synthesizeSpeech(aiResponseContent, aiMessage.id);
-        } else {
+        // Removed automatic audio playback
+      } on ApiException catch (e) {
+        if (mounted) {
           setState(() {
             _messages.add(types.TextMessage(
               author: types.User(id: 'future_self'),
               createdAt: DateTime.now().millisecondsSinceEpoch,
               id: DateTime.now().millisecondsSinceEpoch.toString(),
-              text: 'AI Error: ${response.statusCode} - ${response.body}',
+              text: 'AI Error: ${e.message}',
             ));
           });
         }
       } catch (e) {
-        setState(() {
-          _messages.add(types.TextMessage(
-            author: types.User(id: 'system'),
-            createdAt: DateTime.now().millisecondsSinceEpoch,
-            id: DateTime.now().millisecondsSinceEpoch.toString(),
-            text: 'Error sending message: ${e.toString()}',
-          ));
-        });
+        if (mounted) {
+          setState(() {
+            _messages.add(types.TextMessage(
+              author: types.User(id: 'system'),
+              createdAt: DateTime.now().millisecondsSinceEpoch,
+              id: DateTime.now().millisecondsSinceEpoch.toString(),
+              text: 'Error sending message: ${e.toString()}',
+            ));
+          });
+        }
       }
     }
   }
 
   Future<void> _sendAudioForTranscription(Uint8List audioBytes) async {
-    final url = Uri.parse('$backendUrl/transcribe');
-
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      // Handle user not authenticated case if necessary, e.g., show a message
+      debugPrint("User not authenticated for transcription");
+      if (mounted) {
+        setState(() {
+          // Remove placeholder if it exists
+          _messages.removeWhere((msg) => 
+            msg is types.TextMessage && msg.text == '🎤 Processing voice message...');
+          // Add error message
+          _messages.add(types.TextMessage(
+            author: types.User(id: 'system'),
+            createdAt: DateTime.now().millisecondsSinceEpoch,
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            text: 'Error: User not authenticated for transcription.',
+          ));
+        });
+      }
+      return;
+    }
     try {
-      final response = await http.post(
-        url,
-        headers: {
-          'Content-Type': 'application/octet-stream',
-        },
-        body: audioBytes,
-      );
+      final transcribedText = await _apiService.transcribeAudio(audioBytes, user.id);
 
-      if (response.statusCode == 200) {
-        final responseData = jsonDecode(response.body);
-        final transcribedText = responseData['transcribed_text'];
-
+      if (mounted) {
         setState(() {
           final index = _messages.indexWhere((msg) => 
             msg is types.TextMessage && msg.text == '🎤 Processing voice message...');
@@ -403,7 +399,9 @@ class ChatScreenState extends State<ChatScreen> {
             ));
           }
         });
+      }
 
+      if (mounted) {
         setState(() {
           _messages.add(types.TextMessage(
             author: types.User(id: 'future_self'),
@@ -412,15 +410,17 @@ class ChatScreenState extends State<ChatScreen> {
             text: 'Future Self is thinking...',
           ));
         });
-        await _sendMessage(transcribedText);
-      } else {
+      }
+      await _sendMessage(transcribedText);
+    } on ApiException catch (e) {
+      if (mounted) {
         setState(() {
           final index = _messages.indexWhere((msg) => 
             msg is types.TextMessage && msg.text == '🎤 Processing voice message...');
           if (index != -1) {
             final originalMessage = _messages[index] as types.TextMessage;
             _messages[index] = originalMessage.copyWith(
-              text: 'Transcription failed. Error: ${response.body}',
+              text: 'Transcription failed. Error: ${e.message}',
               createdAt: DateTime.now().millisecondsSinceEpoch,
               author: types.User(id: 'future_self'),
             );
@@ -429,87 +429,174 @@ class ChatScreenState extends State<ChatScreen> {
               author: types.User(id: 'future_self'),
               createdAt: DateTime.now().millisecondsSinceEpoch,
               id: DateTime.now().millisecondsSinceEpoch.toString(),
-              text: 'Transcription failed. Error: ${response.body}',
+              text: 'Transcription failed. Error: ${e.message}',
             ));
           }
         });
       }
     } catch (e) {
-      setState(() {
-        final placeholderIndex = _messages.indexWhere((msg) => 
-          msg is types.TextMessage && msg.text == '🎤 Processing voice message...');
-        if (placeholderIndex != -1) {
-          final originalMessage = _messages[placeholderIndex] as types.TextMessage;
-          _messages[placeholderIndex] = originalMessage.copyWith(
-            text: 'Transcription error: ${e.toString()}',
-            createdAt: DateTime.now().millisecondsSinceEpoch,
-            author: types.User(id: 'system'),
-          );
-        } else {
-          _messages.add(types.TextMessage(
-            author: types.User(id: 'system'),
-            createdAt: DateTime.now().millisecondsSinceEpoch,
-            id: DateTime.now().millisecondsSinceEpoch.toString(),
-            text: 'Transcription error: ${e.toString()}',
-          ));
-        }
-      });
-    }
-  }
-
-  // Enhanced synthesis method with playback controls
-  Future<void> _synthesizeSpeech(String textToSynthesize, String messageId) async {
-    final url = Uri.parse('$backendUrl/synthesize');
-    final user = supabase.auth.currentUser;
-    
-    if (user == null) {
-      debugPrint('Error: No authenticated user found for speech synthesis');
-      return;
-    }
-    
-    try {
-      final response = await http.post(
-        url,
-        headers: <String, String>{'Content-Type': 'application/json; charset=UTF-8'},
-        body: jsonEncode(<String, String>{
-          'text': textToSynthesize,
-          'user_id': user.id,
-        }),
-      );
-      
-      if (response.statusCode == 200) {
-        final responseData = jsonDecode(response.body);
-        final audioContentBase64 = responseData['audio_content'];
-        final audioBytes = base64Decode(audioContentBase64);
-        
-        if (!mounted) return;
+      if (mounted) {
         setState(() {
-          _isPlayingAudio = true;
-          _currentlyPlayingMessageId = messageId;
-        });
-        
-        await _audioPlayer.play(BytesSource(audioBytes));
-        
-        // Listen for completion
-        _audioPlayer.onPlayerComplete.first.then((_) {
-          if (!mounted) return;
-          setState(() {
-            _isPlayingAudio = false;
-            _currentlyPlayingMessageId = null;
-          });
+          final placeholderIndex = _messages.indexWhere((msg) => 
+            msg is types.TextMessage && msg.text == '🎤 Processing voice message...');
+          if (placeholderIndex != -1) {
+            final originalMessage = _messages[placeholderIndex] as types.TextMessage;
+            _messages[placeholderIndex] = originalMessage.copyWith(
+              text: 'Transcription error: ${e.toString()}',
+              createdAt: DateTime.now().millisecondsSinceEpoch,
+              author: types.User(id: 'system'),
+            );
+          } else {
+            _messages.add(types.TextMessage(
+              author: types.User(id: 'system'),
+              createdAt: DateTime.now().millisecondsSinceEpoch,
+              id: DateTime.now().millisecondsSinceEpoch.toString(),
+              text: 'Transcription error: ${e.toString()}',
+            ));
+          }
         });
       }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isPlayingAudio = false;
-        _currentlyPlayingMessageId = null;
-      });
-      debugPrint('Error synthesizing speech: $e');
     }
   }
 
-  // Add timestamp formatting method
+  // Audio playback functionality has been removed
+
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoadingPreferences) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Chat with Future Self'),
+        actions: [
+          IconButton(
+            icon: Icon(_preferredCommunicationMethod == 'voice' ? Icons.mic : Icons.chat_bubble_outline),
+            onPressed: () {
+              setState(() {
+                _preferredCommunicationMethod = _preferredCommunicationMethod == 'voice' ? 'chat' : 'voice';
+                // You might want to save this preference to Supabase as well
+                final user = supabase.auth.currentUser;
+                if (user != null) {
+                  supabase.from('users').update({'preferred_communication': _preferredCommunicationMethod}).eq('id', user.id);
+                }
+              });
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.history),
+            onPressed: () {
+              // This can be used to toggle a view or navigate to a history screen
+              // For now, let's just refresh the current chat history as an example
+              _loadMessageHistory();
+            },
+          ),
+        ],
+      ),
+      drawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: <Widget>[
+            const DrawerHeader(
+              decoration: BoxDecoration(
+                color: Colors.blue,
+              ),
+              child: Text('Past Chats', style: TextStyle(color: Colors.white, fontSize: 24)),
+            ),
+            if (_isLoadingPastChats)
+              const Center(child: CircularProgressIndicator())
+            else if (_pastChatSessions.isEmpty)
+              const ListTile(title: Text('No past chats found'))
+            else
+              ..._pastChatSessions.map((chat) => ListTile(
+                    title: Text(chat['title'] ?? 'Chat'),
+                    subtitle: Text(chat['subtitle'] ?? 'Tap to view'),
+                    onTap: () => _navigateToPastChat(chat),
+                  )),
+            ListTile(
+              leading: const Icon(Icons.add_circle_outline),
+              title: const Text('Start New Chat'),
+              onTap: () {
+                Navigator.pop(context); // Close drawer
+                if (mounted) {
+                  setState(() {
+                    _messages.clear();
+                    _isInitialLoad = false; // Mark that we are starting fresh
+                  });
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+      body: Column(
+        children: <Widget>[
+          if (_isLoadingHistory) // Show loading indicator for message history
+            const Padding(
+              padding: EdgeInsets.all(8.0),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          Expanded(
+            child: ListView.builder(
+              reverse: true,
+              itemCount: _messages.length,
+              itemBuilder: (context, index) {
+                final message = _messages[_messages.length - 1 - index];
+                return _buildMessageBubble(message);
+              },
+            ),
+          ),
+          if (_isRecording)
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text('Recording: ${_recordingDuration}s', style: const TextStyle(color: Colors.red)),
+            ),
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Row(
+              children: <Widget>[
+                if (_preferredCommunicationMethod == 'chat' || _isRecording)
+                  Expanded(
+                    child: TextField(
+                      controller: _messageController,
+                      decoration: InputDecoration(
+                        hintText: _isRecording ? 'Recording...' : 'Type a message',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(25.0),
+                        ),
+                        filled: true,
+                        fillColor: Colors.grey[200],
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 10.0),
+                      ),
+                      enabled: !_isRecording, // Disable text field when recording
+                      onSubmitted: _isRecording ? null : (text) => _sendMessage(text),
+                    ),
+                  ),
+                if (_preferredCommunicationMethod == 'chat' && !_isRecording)
+                  IconButton(
+                    icon: const Icon(Icons.send),
+                    onPressed: () => _sendMessage(_messageController.text),
+                  ),
+                if (_preferredCommunicationMethod == 'voice')
+                  IconButton(
+                    icon: Icon(_isRecording ? Icons.stop : Icons.mic),
+                    onPressed: _isRecording ? _stopRecording : _startRecording,
+                    iconSize: 30.0,
+                    color: _isRecording ? Colors.red : Theme.of(context).primaryColor,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Helper method to format timestamp for message bubbles
   String _formatTimestamp(int timestamp) {
     final dateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
     final now = DateTime.now();
@@ -526,6 +613,7 @@ class ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  // Helper method to build message bubbles
   Widget _buildMessageBubble(types.Message message) {
     final isUserMessage = message.author.id == supabase.auth.currentUser?.id;
     final alignment = isUserMessage ? Alignment.centerRight : Alignment.centerLeft;
@@ -543,169 +631,27 @@ class ChatScreenState extends State<ChatScreen> {
           ),
           decoration: BoxDecoration(
             color: color,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(16.0),
-              topRight: const Radius.circular(16.0),
-              bottomLeft: Radius.circular(isUserMessage ? 16.0 : 4.0),
-              bottomRight: Radius.circular(isUserMessage ? 4.0 : 16.0),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.1),
-                blurRadius: 4.0,
-                offset: const Offset(0, 2),
-              ),
-            ],
+            borderRadius: BorderRadius.circular(12.0),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 message.text,
-                style: TextStyle(
-                  color: textColor,
-                  fontSize: 16.0,
-                ),
+                style: TextStyle(color: textColor, fontSize: 16.0),
               ),
               const SizedBox(height: 4.0),
-              if (!isUserMessage && message.text != 'Future Self is thinking...' && message.text != '🎤 Processing voice message...')
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: Icon(
-                        _currentlyPlayingMessageId == message.id && _isPlayingAudio
-                            ? Icons.pause_circle
-                            : Icons.play_circle,
-                        color: textColor.withValues(alpha: 0.7),
-                        size: 20.0,
-                      ),
-                      onPressed: () {
-                        if (_currentlyPlayingMessageId == message.id && _isPlayingAudio) {
-                          _audioPlayer.pause();
-                           setState(() {
-                            _isPlayingAudio = false;
-                          });
-                        } else {
-                          _synthesizeSpeech(message.text, message.id);
-                        }
-                      },
-                    ),
-                    Text(
-                      _formatTimestamp(message.createdAt!),
-                      style: TextStyle(
-                        color: textColor.withValues(alpha: 0.7),
-                        fontSize: 12.0,
-                      ),
-                    ),
-                  ],
-                )
-              else
-                Text(
-                  _formatTimestamp(message.createdAt!),
-                  style: TextStyle(
-                    color: textColor.withValues(alpha: 0.7),
-                    fontSize: 12.0,
-                  ),
-                ),
+              Text(
+                _formatTimestamp(message.createdAt!),
+                style: TextStyle(color: textColor.withAlpha((0.7 * 255).round()), fontSize: 10.0),
+              ),
+              // Removed audio playback buttons
             ],
           ),
         ),
       );
     }
-    return Container();
-  }
-
-  Widget _buildInputArea() {
-    return Padding(
-      padding: const EdgeInsets.all(8.0),
-      child: Row(
-        children: <Widget>[
-          // Show text input only if preferred method is 'chat'
-          if (_preferredCommunicationMethod == 'chat') ...[
-            Expanded(
-              child: TextField(
-                controller: _messageController,
-                readOnly: _isRecording,
-                enabled: !_isRecording,
-                maxLines: null,
-                textInputAction: TextInputAction.send,
-                decoration: InputDecoration(
-                  hintText: 'Type your message to Future Self...',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(25.0),
-                    borderSide: BorderSide.none,
-                  ),
-                  filled: true,
-                  fillColor: Colors.grey[100],
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 20.0, 
-                    vertical: 12.0
-                  ),
-                  suffixIcon: _messageController.text.isNotEmpty 
-                    ? IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: () {
-                          _messageController.clear();
-                          setState(() {});
-                        },
-                      )
-                    : null,
-                ),
-                onChanged: (text) => setState(() {}),
-                onSubmitted: (_) => _sendMessage(_messageController.text),
-              ),
-            ),
-            const SizedBox(width: 8.0),
-          ],
-          
-          // Show voice recording button for both modes
-          Container(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: _isRecording ? Colors.red.withValues(alpha: 0.1) : null,
-            ),
-            child: IconButton(
-              iconSize: _isRecording ? 32.0 : 24.0,
-              icon: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                child: Icon(
-                  _isRecording ? Icons.stop : Icons.mic,
-                  color: _isRecording ? Colors.red : Colors.blue,
-                ),
-              ),
-              onPressed: _onRecordButtonPress,
-            ),
-          ),
-          if (_isRecording)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8.0),
-              child: Text(
-                '${_recordingDuration}s',
-                style: const TextStyle(
-                  color: Colors.red,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          
-          // Show send button only if preferred method is 'chat' and not recording
-          if (_preferredCommunicationMethod == 'chat' && !_isRecording)
-            IconButton(
-              icon: const Icon(Icons.send),
-              onPressed: () => _sendMessage(_messageController.text),
-            ),
-        ],
-      ),
-    );
-  }
-
-  void _onRecordButtonPress() {
-    if (_isRecording) {
-      _stopRecording();
-    } else {
-      _startRecording();
-    }
+    return const SizedBox.shrink();
   }
 
   Future<void> _startRecording() async {
@@ -713,53 +659,35 @@ class ChatScreenState extends State<ChatScreen> {
       if (await _recorder.hasPermission()) {
         _audioBytes.clear();
         _recordingDuration = 0;
-        
-        // Start timer
+        _recordingTimer?.cancel();
         _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-          if (!mounted) {
-            timer.cancel();
-            return;
+          if (mounted) {
+            setState(() {
+              _recordingDuration++;
+            });
           }
-          setState(() {
-            _recordingDuration++;
-          });
         });
-        
-        // Use PCM16 bits encoder for streaming as it's more widely supported
+
         final stream = await _recorder.startStream(const RecordConfig(encoder: AudioEncoder.pcm16bits));
-    
-        _audioStreamSubscription = stream.listen(
-          (audioChunk) {
-            _audioBytes.addAll(audioChunk);
-          },
-          onDone: () {
-            debugPrint('Recording stream done');
-          },
-          onError: (e) {
-            debugPrint('Recording stream error: $e');
-            if (mounted) {
-              setState(() {
-                _isRecording = false;
-                _recordingDuration = 0;
-              });
-            }
-          },
-        );
-    
-        setState(() {
-          _isRecording = true;
+        _audioStreamSubscription = stream.listen((data) {
+          _audioBytes.addAll(data);
         });
-      } else {
-        debugPrint('Recording permission not granted');
+
+        if (mounted) {
+          setState(() {
+            _isRecording = true;
+            _recordingDuration = 0;
+          });
+        }
       }
     } catch (e) {
-      debugPrint('Error starting recording: $e');
       if (mounted) {
         setState(() {
           _isRecording = false;
           _recordingDuration = 0;
         });
       }
+      debugPrint('Error starting recording: $e');
     }
   }
 
@@ -768,149 +696,40 @@ class ChatScreenState extends State<ChatScreen> {
       await _recorder.stop();
       await _audioStreamSubscription?.cancel();
       _recordingTimer?.cancel();
-      
-      if (!mounted) return;
-      setState(() {
-        _isRecording = false;
-        _recordingDuration = 0;
-      });
-    
-      if (_audioBytes.isNotEmpty) {
-        final audioBytesToSend = Uint8List.fromList(_audioBytes);
-        _audioBytes.clear();
-    
+      if (mounted) {
         setState(() {
-          _messages.add(types.TextMessage(
-            author: types.User(id: supabase.auth.currentUser?.id ?? 'user'),
+          _isRecording = false;
+          _recordingDuration = 0;
+        });
+      }
+      if (_audioBytes.isNotEmpty) {
+        final user = supabase.auth.currentUser;
+        if (user != null) {
+          // Add a placeholder message for the voice input
+          final placeholderMessage = types.TextMessage(
+            author: types.User(id: user.id),
             createdAt: DateTime.now().millisecondsSinceEpoch,
             id: DateTime.now().millisecondsSinceEpoch.toString(),
             text: '🎤 Processing voice message...',
-          ));
-        });
-    
-        await _sendAudioForTranscription(audioBytesToSend);
+          );
+          if (mounted) {
+            setState(() {
+              _messages.add(placeholderMessage);
+            });
+          }
+          await _sendAudioForTranscription(Uint8List.fromList(_audioBytes));
+        }
       }
+      _audioBytes.clear();
     } catch (e) {
       _recordingTimer?.cancel();
-      if (!mounted) return;
-      setState(() {
-        _isRecording = false;
-        _recordingDuration = 0;
-      });
+      if (mounted) {
+        setState(() {
+          _isRecording = false;
+          _recordingDuration = 0;
+        });
+      }
       debugPrint('Error stopping recording: $e');
     }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoadingPreferences) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Chat with Future Self'),
-        actions: [
-          // Add a button to toggle communication method
-          IconButton(
-            icon: Icon(_preferredCommunicationMethod == 'chat' ? Icons.mic : Icons.chat),
-            onPressed: () async {
-              final newMethod = _preferredCommunicationMethod == 'chat' ? 'voice' : 'chat';
-              setState(() {
-                _preferredCommunicationMethod = newMethod;
-              });
-              // Save preference to Supabase
-              final user = supabase.auth.currentUser;
-              if (user != null) {
-                await supabase.from('users').update({'preferred_communication': newMethod}).eq('id', user.id);
-              }
-            },
-          ),
-        ],
-      ),
-      drawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: <Widget>[
-            const DrawerHeader(
-              decoration: BoxDecoration(
-                color: Colors.blue,
-              ),
-              child: Text(
-                'Menu',
-                style: TextStyle(color: Colors.white, fontSize: 24),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.chat_bubble_outline),
-              title: const Text('New Chat'),
-              onTap: () {
-                Navigator.pop(context); // Close drawer
-                if (mounted) {
-                  setState(() {
-                    _messages.clear(); // Clear messages for a new chat
-                  });
-                }
-                _isInitialLoad = false; // Switched to new chat, initial default load no longer relevant
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.dashboard_outlined),
-              title: const Text('Dashboard'),
-              onTap: () {
-                Navigator.pop(context); // Close drawer
-                Navigator.pushReplacementNamed(context, '/home');
-              },
-            ),
-            const Divider(),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-              child: Text(
-                'Past Chats',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
-              ),
-            ),
-            _isLoadingPastChats
-                ? const Center(child: Padding(
-                    padding: EdgeInsets.all(16.0),
-                    child: CircularProgressIndicator(),
-                  ))
-                : _pastChatSessions.isEmpty
-                    ? const ListTile(
-                        title: Text('No past chats found.'),
-                      )
-                    : ListView.builder(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(), // to disable scrolling within ListView in Drawer
-                        itemCount: _pastChatSessions.length,
-                        itemBuilder: (context, index) {
-                          final chat = _pastChatSessions[index];
-                          return ListTile(
-                            title: Text(chat['title'] ?? 'Chat Session'),
-                            subtitle: Text(chat['subtitle'] ?? 'Tap to view'),
-                            onTap: () => _navigateToPastChat(chat),
-                          );
-                        },
-                      ),
-          ],
-        ),
-      ),
-      body: Column(
-        children: <Widget>[
-          Expanded(
-            child: ListView.builder(
-              reverse: true,
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final message = _messages[_messages.length - 1 - index];
-                return _buildMessageBubble(message);
-              },
-            ),
-          ),
-          _buildInputArea(),
-        ],
-      ),
-    );
   }
 }

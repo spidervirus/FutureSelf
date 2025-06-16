@@ -68,9 +68,7 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
   String _messagingFrequency = 'daily'; // 'daily', 'weekly', 'minimal'
   String _emojiUsagePreference = 'love them'; // 'love them', 'use a little', 'never'
   
-  // New controllers for communication style
-  final _chatSampleController = TextEditingController();
-  final _commonPhrasesController = TextEditingController();
+  // Communication style controllers
   
   DateTime? _selectedDate;
   String? _profileImagePath;
@@ -222,9 +220,7 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
         return _wordsSlangController.text.trim().isNotEmpty &&
                _messagePreference.isNotEmpty &&
                _messagingFrequency.isNotEmpty &&
-               _emojiUsagePreference.isNotEmpty &&
-               _chatSampleController.text.trim().isNotEmpty &&
-               _commonPhrasesController.text.trim().isNotEmpty;
+               _emojiUsagePreference.isNotEmpty;
       default:
         return true;
     }
@@ -408,8 +404,6 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
           'emoji_usage': _emojiUsage,
           'punctuation_style': _punctuationStyle,
           'use_slang': _useSlang,
-          'chat_sample': _chatSampleController.text,
-          'common_phrases': _commonPhrasesController.text,
         },
       };
       
@@ -467,8 +461,6 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
     _futureAgeController.dispose();
     _typicalDayController.dispose();
     _accomplishmentController.dispose();
-    _chatSampleController.dispose();
-    _commonPhrasesController.dispose();
     _wordsSlangController.dispose();
     _progressAnimationController.dispose();
     _fadeAnimationController.dispose();
@@ -846,8 +838,6 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
       'futureAge': _futureAgeController.text,
       'typicalDay': _typicalDayController.text,
       'accomplishment': _accomplishmentController.text,
-      'chatSample': _chatSampleController.text,
-      'commonPhrases': _commonPhrasesController.text,
       'wordsSlang': _wordsSlangController.text,
       'useSlang': _useSlang,
     };
@@ -1960,45 +1950,7 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
             ),
           ),
           
-          _buildQuestionCard(
-            icon: Icons.chat_outlined,
-            question: 'Write a sample message as if you\'re texting a close friend:',
-            child: TextFormField(
-              controller: _chatSampleController,
-              maxLines: 3,
-              decoration: const InputDecoration(
-                hintText: 'e.g., "Hey! Just wanted to check in and see how you\'re doing..."',
-                border: OutlineInputBorder(),
-                contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              ),
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Please write a sample message';
-                }
-                return null;
-              },
-            ),
-          ),
-          
-          _buildQuestionCard(
-            icon: Icons.format_quote_outlined,
-            question: 'What are some phrases you use often?',
-            child: TextFormField(
-              controller: _commonPhrasesController,
-              maxLines: 3,
-              decoration: const InputDecoration(
-                hintText: 'e.g., "That\'s so cool!", "I\'m totally down", "Let\'s do this!"',
-                border: OutlineInputBorder(),
-                contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              ),
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Please share some common phrases you use';
-                }
-                return null;
-              },
-            ),
-          ),
+
         ],
       ),
     );
