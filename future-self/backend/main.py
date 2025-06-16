@@ -876,4 +876,4 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8888)
+    uvicorn.run(app, host="0.0.0.0", port=8888, timeout=300, timeout_keep_alive=300)
