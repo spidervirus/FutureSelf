@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data'; // Added for Uint8List
+import 'package:flutter/foundation.dart'; // For logging
 
 import 'package:http/http.dart' as http;
 import '../config.dart'; // Corrected import path for config.dart
@@ -84,7 +84,8 @@ class ApiService {
     });
   }
 
-  Future<String> sendMessage(String message, String userId) async {
+  // Renamed to avoid duplicate function name
+  Future<String> sendMessageString(String message, String userId) async {
     final url = Uri.parse('$baseUrl/chat');
     
     try {
@@ -106,7 +107,7 @@ class ApiService {
         throw HttpException('Failed to send message: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error sending message: $e');
+      debugPrint('Error sending message: $e');
       rethrow;
     }
   }
@@ -148,7 +149,7 @@ class ApiService {
                 yield jsonData['text'];
               }
             } catch (e) {
-              print('Error parsing SSE data: $e');
+              debugPrint('Error parsing SSE data: $e');
               // Skip malformed data
             }
           }
@@ -157,7 +158,7 @@ class ApiService {
         throw HttpException('Failed to stream message: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error streaming message: $e');
+      debugPrint('Error streaming message: $e');
       rethrow;
     }
   }
