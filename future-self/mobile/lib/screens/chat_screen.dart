@@ -312,23 +312,48 @@ class ChatScreenState extends State<ChatScreen> {
       _messageController.clear();
 
       try {
-        final aiResponse = await _apiService.sendMessage(text, user.id);
-        final aiResponseContent = aiResponse['message'] as String;
-
-        final aiMessage = types.TextMessage(
+        // Create a placeholder message for the AI response that will be updated incrementally
+        final aiMessageId = DateTime.now().millisecondsSinceEpoch.toString();
+        final aiPlaceholderMessage = types.TextMessage(
           author: types.User(id: 'future_self'),
           createdAt: DateTime.now().millisecondsSinceEpoch,
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
-          text: aiResponseContent,
+          id: aiMessageId,
+          text: '', // Start with empty text that will be filled incrementally
         );
+        
         if (mounted) {
           setState(() {
-            _messages.add(aiMessage);
+            _messages.add(aiPlaceholderMessage);
           });
         }
-        _saveMessageToDatabase(aiMessage);
+        
+        // Use the streaming API
+        String completeResponse = '';
+        await for (final chunk in _apiService.streamMessage(text, user.id)) {
+          completeResponse += chunk;
+          if (mounted) {
+            setState(() {
+              // Find the placeholder message and update its text
+              final index = _messages.indexWhere((msg) => msg.id == aiMessageId);
+              if (index != -1) {
+                final currentMessage = _messages[index] as types.TextMessage;
+                _messages[index] = currentMessage.copyWith(
+                  text: completeResponse,
+                );
+              }
+            });
+          }
+        }
+        
+        // Save the complete message to the database
+        final finalAiMessage = types.TextMessage(
+          author: types.User(id: 'future_self'),
+          createdAt: DateTime.now().millisecondsSinceEpoch,
+          id: aiMessageId,
+          text: completeResponse,
+        );
+        _saveMessageToDatabase(finalAiMessage);
 
-        // Removed automatic audio playback
       } on ApiException catch (e) {
         if (mounted) {
           setState(() {

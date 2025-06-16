@@ -83,4 +83,82 @@ class ApiService {
       }
     });
   }
+
+  Future<String> sendMessage(String message, String userId) async {
+    final url = Uri.parse('$baseUrl/chat');
+    
+    try {
+      final response = await _retryRequest(() async {
+        return await _client.post(
+          url,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'message': message,
+            'user_id': userId,
+          }),
+        );
+      });
+
+      if (response.statusCode == 200) {
+        final responseData = jsonDecode(response.body);
+        return responseData['response'];
+      } else {
+        throw HttpException('Failed to send message: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error sending message: $e');
+      rethrow;
+    }
+  }
+  
+  // New method for streaming messages
+  Stream<String> streamMessage(String message, String userId) async* {
+    final url = Uri.parse('$baseUrl/chat/stream');
+    final request = http.Request('POST', url);
+    
+    request.headers['Content-Type'] = 'application/json';
+    request.body = jsonEncode({
+      'message': message,
+      'user_id': userId,
+    });
+    
+    try {
+      final response = await _client.send(request);
+      
+      if (response.statusCode == 200) {
+        // Process the stream
+        await for (final chunk in response.stream.transform(utf8.decoder).transform(const LineSplitter())) {
+          if (chunk.startsWith('data: ')) {
+            final data = chunk.substring(6); // Remove 'data: ' prefix
+            try {
+              final jsonData = jsonDecode(data);
+              
+              // Check if this is the completion message
+              if (jsonData.containsKey('done')) {
+                break;
+              }
+              
+              // Check if there's an error
+              if (jsonData.containsKey('error')) {
+                throw HttpException(jsonData['error']);
+              }
+              
+              // Yield the text chunk
+              if (jsonData.containsKey('text')) {
+                yield jsonData['text'];
+              }
+            } catch (e) {
+              print('Error parsing SSE data: $e');
+              // Skip malformed data
+            }
+          }
+        }
+      } else {
+        throw HttpException('Failed to stream message: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error streaming message: $e');
+      rethrow;
+    }
+  }
 }

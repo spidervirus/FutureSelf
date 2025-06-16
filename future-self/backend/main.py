@@ -525,7 +525,7 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
 
     # 5. Call Ollama (Mistral AI)
     ollama_url = os.environ.get("OLLAMA_API_URL")
-    ollama_model = os.environ.get("OLLAMA_MODEL", "mistral:7b")
+    ollama_model = os.environ.get("OLLAMA_MODEL", "mistral")
     
     if not ollama_url:
         print("ERROR: Ollama API URL not found in environment variables. Please set it in your .env file.")
@@ -762,6 +762,117 @@ async def synthesize_speech(request: SynthesisRequest = Body(...)):
             os.remove(tmp_wav_path)
         if tmp_opus_path and os.path.exists(tmp_opus_path):
             os.remove(tmp_opus_path)
+
+# Add this import at the top with other imports
+from fastapi.responses import StreamingResponse
+import json
+
+# Add this new model for streaming responses
+class ChatStreamRequest(BaseModel):
+    message: str
+    user_id: str
+    conversation_id: str | None = None
+
+# Add this new endpoint for streaming responses
+@app.post('/chat/stream')
+async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
+    user_id = request.user_id
+    user_message = request.message
+
+    # Get user data from users table
+    try:
+        user_response = supabase.table("users").select("""
+            communication_style, name, nationality, birth_country, date_of_birth, current_location,
+            future_self_description, preferred_tone, mind_space, future_proud, most_yourself,
+            low_moments, spiral_reminder, change_goal, avoid_tendency, feeling_description,
+            future_description, future_age, typical_day, accomplishment, words_slang,
+            message_preference, messaging_frequency, emoji_usage_preference,
+            preferred_communication, communication_tone, message_length, emoji_usage,
+            punctuation_style, use_slang, chat_sample, common_phrases
+        """).eq("id", user_id).execute()
+        user_data = user_response.data[0] if user_response.data else {}
+    except Exception as e:
+        print(f"Error fetching user data for user {user_id}: {e}")
+        user_data = {}
+
+    # Get conversation context for natural flow
+    conversation_context = await get_conversation_context(user_id, supabase)
+    
+    # Generate weather and events context if location is available
+    weather_events_context = {}
+    current_location = user_data.get('current_location', '')
+    if current_location:
+        try:
+            weather_service = WeatherEventsService()
+            weather_events_context = await weather_service.get_location_context(current_location)
+            print(f"Generated weather/events context for {current_location}")
+        except Exception as e:
+            print(f"Error generating weather/events context: {e}")
+            weather_events_context = {}
+    
+    # Create natural future self prompt with weather/events context
+    prompt = create_future_self_prompt(user_message, user_data, conversation_context, weather_events_context)
+
+    print(f"Generated natural conversation prompt for Ollama:\n{prompt}")
+
+    # Call Ollama (Mistral AI) with streaming enabled
+    ollama_url = os.environ.get("OLLAMA_API_URL")
+    ollama_model = os.environ.get("OLLAMA_MODEL", "mistral:7b")
+    
+    if not ollama_url:
+        print("ERROR: Ollama API URL not found in environment variables. Please set it in your .env file.")
+        return {"error": "Ollama API URL not configured"}
+
+    async def generate_stream():
+        # Store the complete response for saving to database later
+        complete_response = ""
+        
+        try:
+            # Set up the streaming request to Ollama
+            response = requests.post(
+                ollama_url,
+                json={"model": ollama_model, "prompt": prompt, "stream": True},
+                stream=True,  # Enable streaming from requests
+                timeout=180  # Increased timeout to 3 minutes for longer generation
+            )
+            response.raise_for_status()
+            
+            # Stream each chunk as it arrives
+            for line in response.iter_lines():
+                if line:
+                    # Parse the JSON response from Ollama
+                    chunk_data = json.loads(line)
+                    if "response" in chunk_data:
+                        chunk_text = chunk_data["response"]
+                        complete_response += chunk_text
+                        # Format for SSE
+                        yield f"data: {json.dumps({'text': chunk_text})}\n\n"
+            
+            # Save the complete response to the database
+            try:
+                supabase.table("chat_messages").insert({
+                    "user_id": user_id,
+                    "message_id": f"ai_{uuid.uuid4()}",
+                    "content": complete_response,
+                    "author_id": "ai" # AI as the author
+                }).execute()
+            except Exception as e:
+                print(f"Error saving AI response to Supabase: {e}")
+                
+            # Send a completion event
+            yield f"data: {json.dumps({'done': True})}\n\n"
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Error calling Ollama: {e}")
+            yield f"data: {json.dumps({'error': f'Error communicating with Ollama: {str(e)}'})}\n\n"
+        except Exception as e:
+            print(f"An unexpected error occurred in chat_stream_endpoint: {e}")
+            yield f"data: {json.dumps({'error': f'An unexpected error occurred: {str(e)}'})}\n\n"
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream"
+    )
 
 if __name__ == "__main__":
     import uvicorn
