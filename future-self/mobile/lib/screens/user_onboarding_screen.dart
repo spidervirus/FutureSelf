@@ -7,8 +7,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 // Conditional import for web
-import 'package:web/web.dart' as web;
-import 'dart:js_interop';
+// import 'package:web/web.dart' as web;
+// import 'dart:js_interop';
 import 'package:country_picker/country_picker.dart';
 import 'package:date_picker_plus/date_picker_plus.dart';
 import 'package:speech_to_text/speech_to_text.dart';
@@ -646,14 +646,14 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
       if (image != null) {
         if (kIsWeb) {
            // For web, create a blob URL for immediate display
-           final bytes = await image.readAsBytes();
-           final blob = web.Blob([bytes.toJS].toJS);
-           final url = web.URL.createObjectURL(blob);
+           // Web-specific code is commented out for Android build
+           // final bytes = await image.readAsBytes();
+           // final blob = web.Blob([bytes.toJS].toJS);
+           // final url = web.URL.createObjectURL(blob);
            
            setState(() {
              _selectedImage = File(image.path); // Placeholder
-
-             _webImageUrl = url;
+             // _webImageUrl = url;
            });
            // Upload image to Supabase storage using XFile for web
            await _uploadImageWeb(image);
