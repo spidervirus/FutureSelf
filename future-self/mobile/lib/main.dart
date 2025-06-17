@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+// import 'package:flutter_dotenv/flutter_dotenv.dart'; // Removed unused import
+import 'config.dart'; // Import the config file
 import 'screens/auth/sign_in_screen.dart';
 import 'screens/auth/sign_up_screen.dart';
 import 'screens/home_screen.dart';
@@ -11,10 +13,7 @@ import 'screens/settings_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized(); // Ensure widgets are initialized
-  await Supabase.initialize(
-    url: 'https://hsdxqhfyjbnxuaopwpil.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhzZHhxaGZ5amJueHVhb3B3cGlsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDgyNTg1MTAsImV4cCI6MjA2MzgzNDUxMH0.DF6E4HSioBUsO_40dBMiQgnKj_-j_mFHuRA7Zu1GjuM',
-  );
+  await ApiConfig.initializeSupabase(); // Use the method from config.dart
 
   runApp(const MyApp());
 }

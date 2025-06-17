@@ -82,7 +82,6 @@ class HomeScreenState extends State<HomeScreen> { // Make public
   }
 
   void _navigateToReflection() {
-    // TODO: Implement navigation to Reflection Interface
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Navigate to Reflection Interface (Not Implemented)')),
     );

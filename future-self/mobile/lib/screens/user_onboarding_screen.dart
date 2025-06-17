@@ -645,21 +645,17 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
       
       if (image != null) {
         if (kIsWeb) {
-           // For web, create a blob URL for immediate display
-           // Web-specific code is commented out for Android build
-           // final bytes = await image.readAsBytes();
-           // final blob = web.Blob([bytes.toJS].toJS);
-           // final url = web.URL.createObjectURL(blob);
-           
+           // For web, use image.path (which is a blob URL) for immediate display
            setState(() {
-             _selectedImage = File(image.path); // Placeholder
-             // _webImageUrl = url;
+             _webImageUrl = image.path; 
+             _selectedImage = null; // Clear mobile-specific file
            });
            // Upload image to Supabase storage using XFile for web
            await _uploadImageWeb(image);
          } else {
            setState(() {
              _selectedImage = File(image.path);
+             _webImageUrl = null; // Clear web-specific URL
            });
            // Upload image to Supabase storage
            await _uploadImage();
@@ -1694,7 +1690,7 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
             question: 'Upload a photo if you\'d like me to imagine your Future Self.',
             child: Column(
               children: [
-                if (_futurePhotoPath != null || _selectedImage != null)
+                if (_webImageUrl != null || _selectedImage != null || _futurePhotoPath != null)
                   Container(
                     height: 200,
                     width: double.infinity,
@@ -1704,30 +1700,32 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
-                      child: _selectedImage != null
-                          ? (kIsWeb && _webImageUrl != null
-                              ? Image.network(
-                                  _webImageUrl!,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (context, error, stackTrace) {
-                                    return const Center(
-                                      child: Icon(Icons.error, color: Colors.grey),
-                                    );
-                                  },
-                                )
-                              : Image.file(
-                                  _selectedImage!,
-                                  fit: BoxFit.cover,
-                                ))
-                          : Image.network(
-                              _futurePhotoPath!,
+                      child: kIsWeb && _webImageUrl != null
+                          ? Image.network( // Web: Display picked image using blob URL
+                              _webImageUrl!,
                               fit: BoxFit.cover,
                               errorBuilder: (context, error, stackTrace) {
                                 return const Center(
                                   child: Icon(Icons.error, color: Colors.grey),
                                 );
                               },
-                            ),
+                            )
+                          : _selectedImage != null 
+                              ? Image.file( // Mobile: Display picked image using File
+                                  _selectedImage!,
+                                  fit: BoxFit.cover,
+                                )
+                              : _futurePhotoPath != null 
+                                  ? Image.network( // Display uploaded image from Supabase URL
+                                      _futurePhotoPath!,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (context, error, stackTrace) {
+                                        return const Center(
+                                          child: Icon(Icons.error, color: Colors.grey),
+                                        );
+                                      },
+                                    )
+                                  : const SizedBox.shrink(), // Should not be reached if logic is correct
                     ),
                   )
                 else
@@ -1768,7 +1766,7 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
                         label: Text(
                           _isLoading 
                               ? 'Uploading...' 
-                              : (_futurePhotoPath != null || _selectedImage != null) 
+                              : (_webImageUrl != null || _selectedImage != null || _futurePhotoPath != null) 
                                   ? 'Change Photo' 
                                   : 'Upload Photo'
                         ),
@@ -1781,7 +1779,6 @@ class UserOnboardingScreenState extends State<UserOnboardingScreen>
                           setState(() {
                             _futurePhotoPath = null;
                             _selectedImage = null;
-                
                             _webImageUrl = null;
                           });
                         },
