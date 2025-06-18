@@ -19,7 +19,7 @@ class SettingsScreenState extends State<SettingsScreen> {
   bool _dailyReminders = true;
   bool _weeklyReflections = true;
   String _preferredTime = '09:00';
-  String _communicationStyle = 'supportive';
+  String _communicationStyle = 'language_matching';
   
   // App preferences
   bool _darkMode = false;
@@ -27,11 +27,11 @@ class SettingsScreenState extends State<SettingsScreen> {
   bool _analyticsEnabled = true;
 
   final List<String> _communicationStyles = [
-    'supportive',
-    'challenging',
-    'motivational',
-    'gentle',
-    'direct'
+    'language_matching',
+    'anticipate_guide',
+    'reflect_mirror',
+    'remind_reground',
+    'nudge_challenge'
   ];
 
   final List<String> _languages = [
@@ -74,7 +74,7 @@ class SettingsScreenState extends State<SettingsScreen> {
         _dailyReminders = commPrefs['daily_reminders'] ?? true;
         _weeklyReflections = commPrefs['weekly_reflections'] ?? true;
         _preferredTime = commPrefs['preferred_time'] ?? '09:00';
-        _communicationStyle = commPrefs['communication_style'] ?? 'supportive';
+        _communicationStyle = commPrefs['communication_style'] ?? 'language_matching';
         
         _darkMode = appPrefs['dark_mode'] ?? false;
         _language = appPrefs['language'] ?? 'English';
