@@ -401,13 +401,39 @@ app.add_middleware(
 # --- Supabase Initialization ---
 # Get Supabase credentials from environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_KEY")  # Changed from SUPABASE_SERVICE_KEY to SUPABASE_KEY to match .env.example
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    print("ERROR: Supabase URL or Service Key not found in environment variables. Please set them in your .env file.")
+    print(f"ERROR: Supabase URL or Service Key not found in environment variables. Please set them in your .env file.")
+    print(f"SUPABASE_URL: {SUPABASE_URL}")
+    print(f"SUPABASE_KEY: {SUPABASE_SERVICE_KEY}")
     sys.exit(1)
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+# Fix for 'proxy' parameter compatibility issue with newer versions of gotrue
+try:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+except TypeError as e:
+    if "unexpected keyword argument 'proxy'" in str(e):
+        print("Handling gotrue proxy parameter compatibility issue...")
+        # Import required modules for the workaround
+        from supabase._sync.client import SyncClient
+        from gotrue._sync.gotrue_client import SyncGoTrueClient
+        from gotrue._sync.gotrue_base_api import SyncGoTrueBaseAPI
+        
+        # Monkey patch to remove the proxy parameter
+        original_init = SyncGoTrueBaseAPI.__init__
+        def patched_init(self, *args, **kwargs):
+            if 'proxy' in kwargs:
+                del kwargs['proxy']
+            return original_init(self, *args, **kwargs)
+        SyncGoTrueBaseAPI.__init__ = patched_init
+        
+        # Try again with the patched method
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+        print("Successfully connected to Supabase after fixing proxy parameter issue.")
+    else:
+        print(f"Error connecting to Supabase: {e}")
+        sys.exit(1)
 
 # --- Pydantic Models ---
 class ChatMessageRequest(BaseModel):
@@ -479,16 +505,39 @@ except Exception as e:
 
 # --- Initialize NLP Services ---
 print("Loading NLP services...")
+
+# Initialize service variables
+emotion_service = None
+bias_service = None
+analytics_service = None
+
+# Try to import and initialize each service separately
 try:
+    from emotion_detection_service import EmotionDetectionService
     emotion_service = EmotionDetectionService()
-    bias_service = BiasAnalysisService()
-    analytics_service = AnalyticsService(supabase)
-    print("NLP services loaded successfully.")
+    print("Emotion detection service loaded successfully.")
 except Exception as e:
-    print(f"Error loading NLP services: {e}")
-    emotion_service = None
-    bias_service = None
-    analytics_service = None
+    print(f"Error loading emotion detection service: {e}")
+
+try:
+    from bias_analysis_service import BiasAnalysisService
+    bias_service = BiasAnalysisService()
+    print("Bias analysis service loaded successfully.")
+except Exception as e:
+    print(f"Error loading bias analysis service: {e}")
+
+try:
+    from analytics_service import AnalyticsService
+    analytics_service = AnalyticsService(supabase)
+    print("Analytics service loaded successfully.")
+except Exception as e:
+    print(f"Error loading analytics service: {e}")
+
+if emotion_service and bias_service and analytics_service:
+    print("All NLP services loaded successfully.")
+else:
+    print("Some NLP services could not be loaded. The application will continue with limited functionality.")
+
 
 # --- API Endpoints ---
 @app.get('/')
@@ -608,7 +657,33 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
         print(f"An unexpected error occurred in chat_endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
-@app.post('/transcribe', response_model=TranscriptionResponse)
+# Import Celery tasks and AsyncResult for task status tracking
+from tasks import transcribe_audio as transcribe_audio_task
+from celery.result import AsyncResult
+
+# Add new model for task status
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    status: str
+
+# Add new model for transcription task response
+class TranscriptionTaskResponse(BaseModel):
+    task_id: str
+
+# Import Celery tasks and AsyncResult for task status tracking
+from tasks import transcribe_audio as transcribe_audio_task
+from celery.result import AsyncResult
+
+# Add new model for task status
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    status: str
+
+# Add new model for transcription task response
+class TranscriptionTaskResponse(BaseModel):
+    task_id: str
+
+@app.post('/transcribe', response_model=TranscriptionTaskResponse)
 async def transcribe_audio_file(request: Request, file: UploadFile = File(...), user_id_query: Optional[str] = Query(None)):
     user_id_header = request.headers.get("X-User-ID")
     user_id = user_id_query or user_id_header
@@ -616,174 +691,143 @@ async def transcribe_audio_file(request: Request, file: UploadFile = File(...), 
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID must be provided either in query parameters (user_id_query) or headers (X-User-ID).")
 
-    tmp_opus_path: Optional[str] = None
-    tmp_wav_path: Optional[str] = None
-
     try:
-        # Save uploaded Opus file temporarily
-        tmp_opus_path = f"temp_{uuid.uuid4()}.opus"
-        with open(tmp_opus_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        # Convert Opus to WAV using FFmpeg
-        tmp_wav_path = f"temp_{uuid.uuid4()}.wav"
-        ffmpeg_process = await asyncio.create_subprocess_exec(
-            'ffmpeg', '-i', tmp_opus_path, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', tmp_wav_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await ffmpeg_process.communicate()
-
-        if ffmpeg_process.returncode != 0:
-            error_detail = stderr.decode() if stderr else "Unknown FFmpeg error"
-            print(f"FFmpeg error: {error_detail}")
-            raise HTTPException(status_code=500, detail=f"Audio conversion failed: {error_detail}")
-
-        if not whisper_model:
-            raise HTTPException(status_code=500, detail="Whisper model is not loaded.")
+        # Read the file content
+        file_content = await file.read()
         
-        # Transcribe using OpenAI Whisper
-        transcription_result = whisper_model.transcribe(tmp_wav_path, beam_size=5)
+        # Encode the file content as base64
+        audio_data_base64 = base64.b64encode(file_content).decode('utf-8')
         
-        transcribed_text: str = ""
-        detected_language: str = ""
-
-        if isinstance(transcription_result, dict):
-            raw_text_data = transcription_result.get("text")
-            raw_lang_data = transcription_result.get("language")
-
-            if isinstance(raw_text_data, str):
-                transcribed_text = raw_text_data.strip()
-            elif isinstance(raw_text_data, list):
-                # If 'text' is a list (e.g., list of segment texts), join them.
-                segment_texts = [str(s).strip() for s in raw_text_data if isinstance(s, (str, int, float))]
-                transcribed_text = " ".join(filter(None, segment_texts))
-                if not transcribed_text and raw_text_data:
-                    print(f"Transcription result 'text' was a list, but could not extract valid string data: {raw_text_data}")
-            elif raw_text_data is not None:
-                # If text is present but not str or list, try to convert to string
-                transcribed_text = str(raw_text_data).strip()
-                print(f"Transcription result 'text' was of unexpected type {type(raw_text_data)}, converted to string.")
-            else: # raw_text_data is None
-                print("Transcription result 'text' is missing or None.")
-                # transcribed_text remains empty string
-
-            if isinstance(raw_lang_data, str):
-                detected_language = raw_lang_data.strip()
-            elif raw_lang_data is not None:
-                detected_language = str(raw_lang_data).strip()
-                print(f"Transcription result 'language' was of unexpected type {type(raw_lang_data)}, converted to string.")
-            else: # raw_lang_data is None
-                detected_language = "unknown" # Fallback language
-                print("Transcription result 'language' is missing or None.")
-
-        else:
-            # Handle completely unexpected transcription_result format
-            print(f"Unexpected transcription result format (not a dict): {transcription_result}")
-            raise HTTPException(status_code=500, detail="Transcription failed due to unexpected result format.")
+        # Submit the task to Celery
+        task = transcribe_audio_task.delay(audio_data_base64, user_id)
         
-        print(f"Transcription successful. Language: {detected_language}")
-        print(f"Transcribed text: {transcribed_text}")
+        print(f"Transcription task submitted with ID: {task.id}")
+        
+        # Return the task ID to the client
+        return TranscriptionTaskResponse(task_id=task.id)
 
-        # Analyze voice style
-        voice_style_features = analyze_voice_style(tmp_wav_path)
-        print(f"Voice style analysis: {voice_style_features}")
-
-        # Fetch user data directly from users table
-        user_response = supabase.table("users").select("*").eq("id", user_id).execute()
-        user_data = user_response.data[0] if user_response.data else {}
-
-        # No need to update user_style_profiles table anymore
-        # Just log the voice analysis results
-        print(f"Voice analysis complete for user {user_id}")
-
-        return TranscriptionResponse(transcribed_text=transcribed_text)
-
-    except HTTPException:
-        raise # Re-raise HTTP exceptions
     except Exception as e:
         print(f"An unexpected error occurred in transcribe_audio_file: {e}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-    finally:
-        # Clean up temporary files
-        if tmp_opus_path and os.path.exists(tmp_opus_path):
-            os.remove(tmp_opus_path)
-        if tmp_wav_path and os.path.exists(tmp_wav_path):
-            os.remove(tmp_wav_path)
 
-@app.post('/synthesize', response_model=SynthesisResponse)
+@app.get('/transcribe/status/{task_id}', response_model=TaskStatusResponse)
+async def get_transcription_status(task_id: str):
+    """
+    Check the status of a transcription task
+    """
+    try:
+        # Get the task result
+        task_result = AsyncResult(task_id)
+        
+        # Return the task status
+        return TaskStatusResponse(task_id=task_id, status=task_result.status)
+    
+    except Exception as e:
+        print(f"Error checking task status: {e}")
+        raise HTTPException(status_code=500, detail=f"Error checking task status: {str(e)}")
+
+@app.get('/transcribe/result/{task_id}', response_model=TranscriptionResponse)
+async def get_transcription_result(task_id: str):
+    """
+    Get the result of a completed transcription task
+    """
+    try:
+        # Get the task result
+        task_result = AsyncResult(task_id)
+        
+        # Check if the task is ready
+        if not task_result.ready():
+            raise HTTPException(status_code=202, detail="Task is still processing")
+        
+        # Check if the task failed
+        if task_result.failed():
+            raise HTTPException(status_code=500, detail="Task failed")
+        
+        # Get the result
+        result = task_result.get()
+        
+        # Return the transcription result
+        return TranscriptionResponse(transcribed_text=result.get("transcribed_text", ""))
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting task result: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting task result: {str(e)}")
+
+# Import Celery task for speech synthesis
+from tasks import synthesize_speech as synthesize_speech_task
+
+# Add new model for synthesis task response
+class SynthesisTaskResponse(BaseModel):
+    task_id: str
+
+@app.post('/synthesize', response_model=SynthesisTaskResponse)
 async def synthesize_speech(request: SynthesisRequest = Body(...)):
     user_id = request.user_id
     text_to_synthesize = request.text
 
-    # Get user data for potential TTS customization
     try:
-        user_response = supabase.table("users").select("""
-            communication_style, name, nationality, birth_country, date_of_birth, current_location
-        """).eq("id", user_id).execute()
-        user_data = user_response.data[0] if user_response.data else {}
-        print(f"User {user_id} data retrieved for TTS customization")
-    except Exception as e:
-        print(f"Error fetching user data for TTS customization: {e}")
-        user_data = {}
-
-    # Log how we could use style features for TTS (current Coqui model limitations)
-    print("Note: Current TTS model doesn't support dynamic pitch/energy adjustment. Consider voice cloning for future versions.")
-
-    if not tts_model:
-        raise HTTPException(status_code=500, detail="TTS model is not loaded.")
-
-    tmp_wav_path: Optional[str] = None
-    tmp_opus_path: Optional[str] = None
-
-    try:
-        # Generate a unique filename for the temporary WAV file
-        tmp_wav_path = f"temp_{uuid.uuid4()}.wav"
+        # Submit the task to Celery
+        task = synthesize_speech_task.delay(text_to_synthesize, user_id)
         
-        # Synthesize text to WAV file
-        tts_model.tts_to_file(text=text_to_synthesize, file_path=tmp_wav_path)
-        print(f"TTS synthesis completed. WAV file saved to: {tmp_wav_path}")
+        print(f"Speech synthesis task submitted with ID: {task.id}")
+        
+        # Return the task ID to the client
+        return SynthesisTaskResponse(task_id=task.id)
 
-        # Convert WAV to Opus using FFmpeg
-        tmp_opus_path = tmp_wav_path.replace(".wav", ".opus")
-        ffmpeg_process = await asyncio.create_subprocess_exec(
-            'ffmpeg', '-i', tmp_wav_path, '-c:a', 'libopus', '-b:a', '64k', tmp_opus_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await ffmpeg_process.communicate()
-
-        if ffmpeg_process.returncode != 0:
-            error_detail = stderr.decode() if stderr else "Unknown FFmpeg error"
-            print(f"FFmpeg error during WAV to Opus conversion: {error_detail}")
-            raise HTTPException(status_code=500, detail=f"Audio conversion to Opus failed: {error_detail}")
-
-        # Read the Opus file and encode it to base64
-        with open(tmp_opus_path, "rb") as opus_file:
-            opus_audio_data = opus_file.read()
-            base64_audio = base64.b64encode(opus_audio_data).decode('utf-8')
-
-        print(f"Opus conversion completed. File size: {len(opus_audio_data)} bytes")
-        return SynthesisResponse(audio_content=base64_audio)
-
-    except HTTPException:
-        raise # Re-raise HTTP exceptions
     except Exception as e:
         print(f"An unexpected error occurred in synthesize_speech: {e}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-    finally:
-        # Clean up temporary files
-        if tmp_wav_path and os.path.exists(tmp_wav_path):
-            os.remove(tmp_wav_path)
-        if tmp_opus_path and os.path.exists(tmp_opus_path):
-            os.remove(tmp_opus_path)
+
+@app.get('/synthesize/status/{task_id}', response_model=TaskStatusResponse)
+async def get_synthesis_status(task_id: str):
+    """
+    Check the status of a speech synthesis task
+    """
+    try:
+        # Get the task result
+        task_result = AsyncResult(task_id)
+        
+        # Return the task status
+        return TaskStatusResponse(task_id=task_id, status=task_result.status)
+    
+    except Exception as e:
+        print(f"Error checking synthesis task status: {e}")
+        raise HTTPException(status_code=500, detail=f"Error checking task status: {str(e)}")
+
+@app.get('/synthesize/result/{task_id}', response_model=SynthesisResponse)
+async def get_synthesis_result(task_id: str):
+    """
+    Get the result of a completed speech synthesis task
+    """
+    try:
+        # Get the task result
+        task_result = AsyncResult(task_id)
+        
+        # Check if the task is ready
+        if not task_result.ready():
+            raise HTTPException(status_code=202, detail="Task is still processing")
+        
+        # Check if the task failed
+        if task_result.failed():
+            raise HTTPException(status_code=500, detail="Task failed")
+        
+        # Get the result
+        result = task_result.get()
+        
+        # Return the synthesis result
+        return SynthesisResponse(audio_content=result.get("audio_content", ""))
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting synthesis task result: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting task result: {str(e)}")
 
 # Add this import at the top with other imports
 from fastapi.responses import StreamingResponse
 import json
-
-# Import NLP services
-from emotion_detection_service import EmotionDetectionService
-from bias_analysis_service import BiasAnalysisService
-from analytics_service import AnalyticsService
 
 # Add this new model for streaming responses
 class ChatStreamRequest(BaseModel):
@@ -836,97 +880,157 @@ class UserInsightsResponse(BaseModel):
     overall_wellbeing_score: int
 
 # Emotion Analysis Endpoint
-@app.post('/analyze-emotion', response_model=EmotionAnalysisResponse)
+# Import Celery task for emotion analysis
+from tasks import analyze_emotion as analyze_emotion_task
+
+# Add new model for emotion analysis task response
+class EmotionAnalysisTaskResponse(BaseModel):
+    task_id: str
+
+@app.post('/analyze-emotion', response_model=EmotionAnalysisTaskResponse)
 async def analyze_emotion_endpoint(request: EmotionAnalysisRequest = Body(...)):
     if not emotion_service:
         raise HTTPException(status_code=503, detail="Emotion detection service is not available")
     
     try:
-        # Analyze text emotions
-        text_emotions = emotion_service.analyze_text_emotion(request.text)
+        # Submit the task to Celery
+        task = analyze_emotion_task.delay(request.text, request.audio_file, request.user_id)
         
-        # Analyze voice emotions if audio is provided
-        voice_emotions = None
-        if request.audio_file:
-            try:
-                # Decode base64 audio and save temporarily
-                audio_data = base64.b64decode(request.audio_file)
-                tmp_audio_path = f"temp_emotion_{uuid.uuid4()}.wav"
-                
-                with open(tmp_audio_path, "wb") as f:
-                    f.write(audio_data)
-                
-                voice_emotions = emotion_service.analyze_voice_emotion(tmp_audio_path)
-                
-                # Clean up temporary file
-                if os.path.exists(tmp_audio_path):
-                    os.remove(tmp_audio_path)
-                    
-            except Exception as e:
-                print(f"Error analyzing voice emotion: {e}")
-                voice_emotions = None
+        print(f"Emotion analysis task submitted with ID: {task.id}")
         
-        # Store emotion analysis in database
-        try:
-            supabase.table("emotion_analysis").insert({
-                "user_id": request.user_id,
-                "text": request.text,
-                "emotions": text_emotions["emotions"],
-                "dominant_emotion": text_emotions["dominant_emotion"],
-                "confidence": text_emotions["confidence"],
-                "voice_emotions": voice_emotions,
-                "timestamp": datetime.utcnow().isoformat()
-            }).execute()
-        except Exception as e:
-            print(f"Error storing emotion analysis: {e}")
-        
-        return EmotionAnalysisResponse(
-            emotions=text_emotions["emotions"],
-            dominant_emotion=text_emotions["dominant_emotion"],
-            confidence=text_emotions["confidence"],
-            voice_emotions=voice_emotions
-        )
-        
+        # Return the task ID to the client
+        return EmotionAnalysisTaskResponse(task_id=task.id)
+    
     except Exception as e:
-        print(f"Error in emotion analysis: {e}")
-        raise HTTPException(status_code=500, detail=f"Emotion analysis failed: {str(e)}")
+        print(f"An unexpected error occurred in analyze_emotion: {e}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+@app.get('/analyze-emotion/status/{task_id}', response_model=TaskStatusResponse)
+async def get_emotion_analysis_status(task_id: str):
+    """
+    Check the status of an emotion analysis task
+    """
+    try:
+        # Get the task result
+        task_result = AsyncResult(task_id)
+        
+        # Return the task status
+        return TaskStatusResponse(task_id=task_id, status=task_result.status)
+    
+    except Exception as e:
+        print(f"Error checking emotion analysis task status: {e}")
+        raise HTTPException(status_code=500, detail=f"Error checking task status: {str(e)}")
+
+@app.get('/analyze-emotion/result/{task_id}', response_model=EmotionAnalysisResponse)
+async def get_emotion_analysis_result(task_id: str):
+    """
+    Get the result of a completed emotion analysis task
+    """
+    try:
+        # Get the task result
+        task_result = AsyncResult(task_id)
+        
+        # Check if the task is ready
+        if not task_result.ready():
+            raise HTTPException(status_code=202, detail="Task is still processing")
+        
+        # Check if the task failed
+        if task_result.failed():
+            raise HTTPException(status_code=500, detail="Task failed")
+        
+        # Get the result
+        result = task_result.get()
+        
+        # Return the emotion analysis result
+        return EmotionAnalysisResponse(
+            emotions=result.get("emotions", {}),
+            dominant_emotion=result.get("dominant_emotion", ""),
+            confidence=result.get("confidence", 0.0),
+            voice_emotions=result.get("voice_emotions")
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting emotion analysis task result: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting task result: {str(e)}")
+
+# Import Celery task for bias analysis
+from tasks import analyze_bias as analyze_bias_task
+
+# Add new model for bias analysis task response
+class BiasAnalysisTaskResponse(BaseModel):
+    task_id: str
 
 # Bias Analysis Endpoint
-@app.post('/analyze-bias', response_model=BiasAnalysisResponse)
+@app.post('/analyze-bias', response_model=BiasAnalysisTaskResponse)
 async def analyze_bias_endpoint(request: BiasAnalysisRequest = Body(...)):
     if not bias_service:
         raise HTTPException(status_code=503, detail="Bias analysis service is not available")
     
     try:
-        # Perform comprehensive bias analysis
-        analysis_result = bias_service.analyze_bias_and_toxicity(request.text)
+        # Submit the task to Celery
+        task = analyze_bias_task.delay(request.text, request.user_id)
         
-        # Store bias analysis in database
-        try:
-            supabase.table("bias_analysis").insert({
-                "user_id": request.user_id,
-                "text": request.text,
-                "toxicity_score": analysis_result["toxicity_score"],
-                "bias_patterns": analysis_result["bias_patterns"],
-                "language": analysis_result["language"],
-                "sentiment": analysis_result["sentiment"],
-                "recommendations": analysis_result["recommendations"],
-                "timestamp": datetime.utcnow().isoformat()
-            }).execute()
-        except Exception as e:
-            print(f"Error storing bias analysis: {e}")
+        print(f"Bias analysis task submitted with ID: {task.id}")
         
-        return BiasAnalysisResponse(
-            toxicity_score=analysis_result["toxicity_score"],
-            bias_patterns=analysis_result["bias_patterns"],
-            language=analysis_result["language"],
-            sentiment=analysis_result["sentiment"],
-            recommendations=analysis_result["recommendations"]
-        )
-        
+        # Return the task ID to the client
+        return BiasAnalysisTaskResponse(task_id=task.id)
+    
     except Exception as e:
-        print(f"Error in bias analysis: {e}")
-        raise HTTPException(status_code=500, detail=f"Bias analysis failed: {str(e)}")
+        print(f"An unexpected error occurred in analyze_bias: {e}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+@app.get('/analyze-bias/status/{task_id}', response_model=TaskStatusResponse)
+async def get_bias_analysis_status(task_id: str):
+    """
+    Check the status of a bias analysis task
+    """
+    try:
+        # Get the task result
+        task_result = AsyncResult(task_id)
+        
+        # Return the task status
+        return TaskStatusResponse(task_id=task_id, status=task_result.status)
+    
+    except Exception as e:
+        print(f"Error checking bias analysis task status: {e}")
+        raise HTTPException(status_code=500, detail=f"Error checking task status: {str(e)}")
+
+@app.get('/analyze-bias/result/{task_id}', response_model=BiasAnalysisResponse)
+async def get_bias_analysis_result(task_id: str):
+    """
+    Get the result of a completed bias analysis task
+    """
+    try:
+        # Get the task result
+        task_result = AsyncResult(task_id)
+        
+        # Check if the task is ready
+        if not task_result.ready():
+            raise HTTPException(status_code=202, detail="Task is still processing")
+        
+        # Check if the task failed
+        if task_result.failed():
+            raise HTTPException(status_code=500, detail="Task failed")
+        
+        # Get the result
+        result = task_result.get()
+        
+        # Return the bias analysis result
+        return BiasAnalysisResponse(
+            toxicity_score=result.get("toxicity_score", 0.0),
+            bias_patterns=result.get("bias_patterns", {}),
+            language=result.get("language", ""),
+            sentiment=result.get("sentiment", {}),
+            recommendations=result.get("recommendations", [])
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting bias analysis task result: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting task result: {str(e)}")
 
 # Analytics Endpoints
 @app.post('/analytics/emotion-trends', response_model=EmotionTrendsResponse)

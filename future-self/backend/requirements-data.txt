@@ -1,9 +1,0 @@
-# Data manipulation and visualization dependencies for Future Self App
-# Python version: 3.11.9
-
-# Data manipulation
-pandas==1.4.4        # Using specific version instead of range for better dependency resolution
-
-# Data visualization
-matplotlib==3.8.2     # For analytics visualization
-seaborn==0.13.0       # Statistical data visualization

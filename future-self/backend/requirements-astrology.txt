@@ -1,6 +1,0 @@
-# Astrology integration dependencies for Future Self App
-# Python version: 3.11.9
-
-# For astrology calculations and timezone handling
-pyswisseph==2.10.3.2  # Swiss Ephemeris for precise astrological calculations (added specific version)
-pytz==2023.3         # For timezone handling in astrology (added specific version)
