@@ -1,0 +1,22 @@
+# Core dependencies for Future Self App
+# Python version: 3.11.9
+
+# Core FastAPI framework
+fastapi[all]==0.104.1
+uvicorn[standard]==0.24.0
+
+# HTTP client for API requests
+requests==2.31.0
+
+# Data handling
+pydantic==2.5.0
+
+# Environment variables
+python-dotenv==1.0.0
+
+# Supabase integration
+supabase==2.3.4
+postgrest==0.13.2
+
+# For caching
+redis==5.0.1

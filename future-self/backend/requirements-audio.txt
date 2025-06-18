@@ -1,0 +1,17 @@
+# Audio processing dependencies for Future Self App
+# Python version: 3.11.9
+
+# Core audio processing
+whisper==1.1.10      # Speech recognition
+TTS==0.22.0          # Text-to-speech synthesis
+pyogg==0.6.14a1      # OGG file handling
+
+# Additional audio processing
+librosa==0.10.1      # Advanced audio analysis
+soundfile==0.12.1    # Audio file I/O
+
+# Note: The following built-in modules are also used but don't need installation:
+# wave, struct, base64, tempfile, shutil, subprocess
+
+# Uncomment if needed:
+# ffmpeg-python==0.2.0  # Alternative to subprocess ffmpeg calls

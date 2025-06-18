@@ -1,0 +1,9 @@
+# Complete dependencies for Future Self App
+# Python version: 3.11.9
+
+# Include all requirement files
+-r requirements-core.txt
+-r requirements-nlp.txt
+-r requirements-audio.txt
+-r requirements-data.txt
+-r requirements-astrology.txt
