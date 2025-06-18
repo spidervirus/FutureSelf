@@ -1122,6 +1122,17 @@ async def get_emotion_chart_endpoint(user_id: str, days: int = 30):
         print(f"Error generating emotion chart: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate emotion chart: {str(e)}")
 
+# NLP Endpoints for compatibility with frontend
+@app.post('/nlp/emotion', response_model=EmotionAnalysisTaskResponse)
+async def nlp_emotion_endpoint(request: EmotionAnalysisRequest = Body(...)):
+    """Compatibility endpoint for /nlp/emotion that redirects to /analyze-emotion"""
+    return await analyze_emotion_endpoint(request)
+
+@app.post('/nlp/bias', response_model=BiasAnalysisTaskResponse)
+async def nlp_bias_endpoint(request: BiasAnalysisRequest = Body(...)):
+    """Compatibility endpoint for /nlp/bias that redirects to /analyze-bias"""
+    return await analyze_bias_endpoint(request)
+
 # Add this new endpoint for streaming responses
 @app.post('/chat/stream')
 async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
