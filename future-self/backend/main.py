@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from astrology_service import astrology_service
 from weather_events_service import WeatherEventsService
 from datetime import datetime
+from celery.result import AsyncResult
 
 # --- Load environment variables ---
 load_dotenv() # Call it early
