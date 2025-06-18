@@ -125,6 +125,70 @@ def analyze_voice_style(audio_file_path: str):
 
 # --- Helper Functions for Natural Conversation --- #
 
+# Add this function to analyze user messages and determine communication style
+def determine_communication_style(user_message, message_history=None):
+    """Analyze user's message and chat history to determine appropriate communication style"""
+    # Default style if analysis is inconclusive
+    default_style = 'reflect_mirror'
+    
+    # Initialize message characteristics counters
+    characteristics = {
+        'questions': 0,
+        'emotional_words': 0,
+        'directive_language': 0,
+        'self_reflection': 0,
+        'seeking_guidance': 0
+    }
+    
+    # Simple analysis of current message
+    if '?' in user_message:
+        characteristics['questions'] += 1
+    
+    # Check for emotional language (simplified example)
+    emotional_terms = ['feel', 'sad', 'happy', 'anxious', 'worried', 'excited', 'overwhelmed']
+    for term in emotional_terms:
+        if term in user_message.lower():
+            characteristics['emotional_words'] += 1
+    
+    # Check for directive language
+    directive_terms = ['should', 'need to', 'have to', 'must', 'want']
+    for term in directive_terms:
+        if term in user_message.lower():
+            characteristics['directive_language'] += 1
+    
+    # Check for self-reflection
+    reflection_terms = ['think', 'realize', 'understand', 'wonder', 'question', 'myself']
+    for term in reflection_terms:
+        if term in user_message.lower():
+            characteristics['self_reflection'] += 1
+    
+    # Check for guidance seeking
+    guidance_terms = ['help', 'advice', 'suggest', 'guide', 'what should']
+    for term in guidance_terms:
+        if term in user_message.lower():
+            characteristics['seeking_guidance'] += 1
+    
+    # Determine style based on message characteristics
+    if characteristics['emotional_words'] >= 2 or 'calm' in user_message.lower() or 'anxious' in user_message.lower():
+        return 'remind_reground'  # User needs emotional grounding
+    
+    if characteristics['seeking_guidance'] >= 1 or characteristics['questions'] >= 2:
+        return 'anticipate_guide'  # User is seeking guidance
+    
+    if characteristics['self_reflection'] >= 2:
+        return 'reflect_mirror'  # User is in self-reflection mode
+    
+    if characteristics['directive_language'] >= 2 or 'goal' in user_message.lower():
+        return 'nudge_challenge'  # User is talking about goals/needs
+    
+    # If message is very casual or uses slang, mirror their language
+    casual_indicators = ['hey', 'yo', 'sup', 'lol', 'haha', 'cool']
+    for term in casual_indicators:
+        if term in user_message.lower():
+            return 'language_matching'
+    
+    return default_style
+
 # Get recent conversation context for natural flow
 async def get_conversation_context(user_id: str, supabase_client: Client, limit: int = 5) -> list:
     try:
@@ -229,9 +293,7 @@ def create_future_self_prompt(user_message: str, user_profile: dict, conversatio
     message_preference = user_profile.get("message_preference", "")
     messaging_frequency = user_profile.get("messaging_frequency", "")
     emoji_usage_preference = user_profile.get("emoji_usage_preference", "")
-    communication_tone = user_profile.get("communication_tone", "")
-    chat_sample = user_profile.get("chat_sample", "")
-    common_phrases = user_profile.get("common_phrases", "")
+    preferred_tone = user_profile.get("preferred_tone", "")
     
     # Build persona context
     persona_context = ""
@@ -271,27 +333,23 @@ You're not an AI assistant. You're literally {name_part} who has grown, learned,
     
     # Add communication style guidance
     communication_guidance = ""
-    if preferred_tone:
-        communication_guidance += f"You naturally communicate with a {preferred_tone} tone. "
     
-    if message_preference == "long":
-        communication_guidance += "You tend to give thoughtful, detailed responses. "
-    elif message_preference == "short":
-        communication_guidance += "You prefer concise, direct communication. "
+    # Determine style based on user's actual message
+    detected_style = determine_communication_style(user_message, conversation_context)
     
-    if emoji_usage_preference == "love them":
-        communication_guidance += "You use emojis naturally in your communication. "
-    elif emoji_usage_preference == "never":
-        communication_guidance += "You communicate without emojis. "
-    
-    if words_slang:
-        communication_guidance += f"You might use phrases like: {words_slang}. "
-    
-    if common_phrases:
-        communication_guidance += f"You often say things like: {common_phrases}. "
-    
-    if chat_sample:
-        communication_guidance += f"Your communication style is similar to: {chat_sample}. "
+    # Apply the detected communication style
+    if detected_style == 'language_matching':
+        communication_guidance += "You talk just like the user, mirroring their speech patterns, vocabulary, and phrasing. Match their communication style and adapt to their language. "
+    elif detected_style == 'anticipate_guide':
+        communication_guidance += "You anticipate and guide the user's needs. You ask probing questions, explore local options, and guide them toward solutions. "
+    elif detected_style == 'reflect_mirror':
+        communication_guidance += "You help the user see themselves. You reflect back their thoughts, validate their experiences, and help them understand themselves better. "
+    elif detected_style == 'remind_reground':
+        communication_guidance += "You bring the user back to center. You remind them of familiar words, values, and emotional anchors. You help calm them down. "
+    elif detected_style == 'nudge_challenge':
+        communication_guidance += "You gently push the user toward growth and positive change. You challenge their assumptions and remind them what they said they want. "
+        
+        # Removed unused fields: common_phrases, chat_sample, punctuation_style, communication_tone
     
     # Add astrology insights if available
     astrology_context = ""
@@ -558,8 +616,8 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
             low_moments, spiral_reminder, change_goal, avoid_tendency, feeling_description,
             future_description, future_age, typical_day, accomplishment, words_slang,
             message_preference, messaging_frequency, emoji_usage_preference,
-            preferred_communication, communication_tone, message_length, emoji_usage,
-            punctuation_style, use_slang, chat_sample, common_phrases
+            preferred_communication, message_length, emoji_usage,
+            use_slang
         """).eq("id", user_id).execute()
         user_data = user_response.data[0] if user_response.data else {}
     except Exception as e:
@@ -582,7 +640,7 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
             weather_events_context = {}
     
     # 6. Create natural future self prompt with weather/events context
-    prompt = create_future_self_prompt(user_message, user_data, conversation_context, weather_events_context)
+    prompt = create_future_self_prompt(user_data, user_message, conversation_context, weather_events_context)
 
     print(f"Generated natural conversation prompt for Ollama:\n{prompt}")
 
@@ -1158,8 +1216,8 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
             low_moments, spiral_reminder, change_goal, avoid_tendency, feeling_description,
             future_description, future_age, typical_day, accomplishment, words_slang,
             message_preference, messaging_frequency, emoji_usage_preference,
-            preferred_communication, communication_tone, message_length, emoji_usage,
-            punctuation_style, use_slang, chat_sample, common_phrases
+            preferred_communication, message_length, emoji_usage,
+            use_slang
         """).eq("id", user_id).execute()
         user_data = user_response.data[0] if user_response.data else {}
     except Exception as e:
