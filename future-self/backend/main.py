@@ -477,6 +477,19 @@ except Exception as e:
     print(f"Error loading Coqui TTS model '{tts_model_name}': {e}")
     tts_model = None # Handle case where model loading fails
 
+# --- Initialize NLP Services ---
+print("Loading NLP services...")
+try:
+    emotion_service = EmotionDetectionService()
+    bias_service = BiasAnalysisService()
+    analytics_service = AnalyticsService(supabase)
+    print("NLP services loaded successfully.")
+except Exception as e:
+    print(f"Error loading NLP services: {e}")
+    emotion_service = None
+    bias_service = None
+    analytics_service = None
+
 # --- API Endpoints ---
 @app.get('/')
 async def read_root():
@@ -767,11 +780,242 @@ async def synthesize_speech(request: SynthesisRequest = Body(...)):
 from fastapi.responses import StreamingResponse
 import json
 
+# Import NLP services
+from emotion_detection_service import EmotionDetectionService
+from bias_analysis_service import BiasAnalysisService
+from analytics_service import AnalyticsService
+
 # Add this new model for streaming responses
 class ChatStreamRequest(BaseModel):
     message: str
     user_id: str
     conversation_id: str | None = None
+
+# NLP Analysis Models
+class EmotionAnalysisRequest(BaseModel):
+    text: str
+    user_id: str
+    audio_file: Optional[str] = None  # Base64 encoded audio for voice emotion analysis
+
+class EmotionAnalysisResponse(BaseModel):
+    emotions: dict
+    dominant_emotion: str
+    confidence: float
+    voice_emotions: Optional[dict] = None
+
+class BiasAnalysisRequest(BaseModel):
+    text: str
+    user_id: str
+
+class BiasAnalysisResponse(BaseModel):
+    toxicity_score: float
+    bias_patterns: dict
+    language: str
+    sentiment: dict
+    recommendations: list
+
+# Analytics Models
+class AnalyticsRequest(BaseModel):
+    user_id: str
+    days: Optional[int] = 30
+
+class EmotionTrendsResponse(BaseModel):
+    trends: dict
+    summary: dict
+    daily_data: Optional[dict] = None
+
+class BiasTrendsResponse(BaseModel):
+    trends: dict
+    summary: dict
+    daily_data: Optional[dict] = None
+
+class UserInsightsResponse(BaseModel):
+    emotion_insights: list
+    bias_insights: list
+    recommendations: list
+    overall_wellbeing_score: int
+
+# Emotion Analysis Endpoint
+@app.post('/analyze-emotion', response_model=EmotionAnalysisResponse)
+async def analyze_emotion_endpoint(request: EmotionAnalysisRequest = Body(...)):
+    if not emotion_service:
+        raise HTTPException(status_code=503, detail="Emotion detection service is not available")
+    
+    try:
+        # Analyze text emotions
+        text_emotions = emotion_service.analyze_text_emotion(request.text)
+        
+        # Analyze voice emotions if audio is provided
+        voice_emotions = None
+        if request.audio_file:
+            try:
+                # Decode base64 audio and save temporarily
+                audio_data = base64.b64decode(request.audio_file)
+                tmp_audio_path = f"temp_emotion_{uuid.uuid4()}.wav"
+                
+                with open(tmp_audio_path, "wb") as f:
+                    f.write(audio_data)
+                
+                voice_emotions = emotion_service.analyze_voice_emotion(tmp_audio_path)
+                
+                # Clean up temporary file
+                if os.path.exists(tmp_audio_path):
+                    os.remove(tmp_audio_path)
+                    
+            except Exception as e:
+                print(f"Error analyzing voice emotion: {e}")
+                voice_emotions = None
+        
+        # Store emotion analysis in database
+        try:
+            supabase.table("emotion_analysis").insert({
+                "user_id": request.user_id,
+                "text": request.text,
+                "emotions": text_emotions["emotions"],
+                "dominant_emotion": text_emotions["dominant_emotion"],
+                "confidence": text_emotions["confidence"],
+                "voice_emotions": voice_emotions,
+                "timestamp": datetime.utcnow().isoformat()
+            }).execute()
+        except Exception as e:
+            print(f"Error storing emotion analysis: {e}")
+        
+        return EmotionAnalysisResponse(
+            emotions=text_emotions["emotions"],
+            dominant_emotion=text_emotions["dominant_emotion"],
+            confidence=text_emotions["confidence"],
+            voice_emotions=voice_emotions
+        )
+        
+    except Exception as e:
+        print(f"Error in emotion analysis: {e}")
+        raise HTTPException(status_code=500, detail=f"Emotion analysis failed: {str(e)}")
+
+# Bias Analysis Endpoint
+@app.post('/analyze-bias', response_model=BiasAnalysisResponse)
+async def analyze_bias_endpoint(request: BiasAnalysisRequest = Body(...)):
+    if not bias_service:
+        raise HTTPException(status_code=503, detail="Bias analysis service is not available")
+    
+    try:
+        # Perform comprehensive bias analysis
+        analysis_result = bias_service.analyze_bias_and_toxicity(request.text)
+        
+        # Store bias analysis in database
+        try:
+            supabase.table("bias_analysis").insert({
+                "user_id": request.user_id,
+                "text": request.text,
+                "toxicity_score": analysis_result["toxicity_score"],
+                "bias_patterns": analysis_result["bias_patterns"],
+                "language": analysis_result["language"],
+                "sentiment": analysis_result["sentiment"],
+                "recommendations": analysis_result["recommendations"],
+                "timestamp": datetime.utcnow().isoformat()
+            }).execute()
+        except Exception as e:
+            print(f"Error storing bias analysis: {e}")
+        
+        return BiasAnalysisResponse(
+            toxicity_score=analysis_result["toxicity_score"],
+            bias_patterns=analysis_result["bias_patterns"],
+            language=analysis_result["language"],
+            sentiment=analysis_result["sentiment"],
+            recommendations=analysis_result["recommendations"]
+        )
+        
+    except Exception as e:
+        print(f"Error in bias analysis: {e}")
+        raise HTTPException(status_code=500, detail=f"Bias analysis failed: {str(e)}")
+
+# Analytics Endpoints
+@app.post('/analytics/emotion-trends', response_model=EmotionTrendsResponse)
+async def get_emotion_trends_endpoint(request: AnalyticsRequest = Body(...)):
+    if not analytics_service:
+        raise HTTPException(status_code=503, detail="Analytics service is not available")
+    
+    try:
+        trends_data = analytics_service.get_emotion_trends(request.user_id, request.days)
+        
+        if 'error' in trends_data:
+            raise HTTPException(status_code=500, detail=trends_data['error'])
+        
+        return EmotionTrendsResponse(
+            trends=trends_data.get('trends', {}),
+            summary=trends_data.get('summary', {}),
+            daily_data=trends_data.get('daily_data')
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting emotion trends: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get emotion trends: {str(e)}")
+
+@app.post('/analytics/bias-trends', response_model=BiasTrendsResponse)
+async def get_bias_trends_endpoint(request: AnalyticsRequest = Body(...)):
+    if not analytics_service:
+        raise HTTPException(status_code=503, detail="Analytics service is not available")
+    
+    try:
+        trends_data = analytics_service.get_bias_trends(request.user_id, request.days)
+        
+        if 'error' in trends_data:
+            raise HTTPException(status_code=500, detail=trends_data['error'])
+        
+        return BiasTrendsResponse(
+            trends=trends_data.get('trends', {}),
+            summary=trends_data.get('summary', {}),
+            daily_data=trends_data.get('daily_data')
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting bias trends: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get bias trends: {str(e)}")
+
+@app.post('/analytics/user-insights', response_model=UserInsightsResponse)
+async def get_user_insights_endpoint(request: AnalyticsRequest = Body(...)):
+    if not analytics_service:
+        raise HTTPException(status_code=503, detail="Analytics service is not available")
+    
+    try:
+        insights_data = analytics_service.get_user_insights(request.user_id, request.days)
+        
+        if 'error' in insights_data:
+            print(f"Analytics service error: {insights_data['error']}")
+            # Still return partial data if available
+        
+        return UserInsightsResponse(
+            emotion_insights=insights_data.get('emotion_insights', []),
+            bias_insights=insights_data.get('bias_insights', []),
+            recommendations=insights_data.get('recommendations', []),
+            overall_wellbeing_score=insights_data.get('overall_wellbeing_score', 0)
+        )
+        
+    except Exception as e:
+        print(f"Error getting user insights: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get user insights: {str(e)}")
+
+@app.get('/analytics/emotion-chart/{user_id}')
+async def get_emotion_chart_endpoint(user_id: str, days: int = 30):
+    if not analytics_service:
+        raise HTTPException(status_code=503, detail="Analytics service is not available")
+    
+    try:
+        chart_base64 = analytics_service.generate_emotion_chart(user_id, days)
+        
+        if not chart_base64:
+            raise HTTPException(status_code=404, detail="No data available to generate chart")
+        
+        return {"chart": chart_base64, "format": "png"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating emotion chart: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate emotion chart: {str(e)}")
 
 # Add this new endpoint for streaming responses
 @app.post('/chat/stream')
@@ -876,4 +1120,4 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8888, timeout=300, timeout_keep_alive=300)
+    uvicorn.run(app, host="0.0.0.0", port=8888)

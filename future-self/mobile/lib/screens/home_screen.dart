@@ -146,6 +146,14 @@ class HomeScreenState extends State<HomeScreen> { // Make public
                 Navigator.pushNamed(context, '/pastChats');
               },
             ),
+            ListTile(
+              leading: const Icon(Icons.analytics),
+              title: const Text('Analytics'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.pushNamed(context, '/analytics');
+              },
+            ),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.person),

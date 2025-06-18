@@ -10,6 +10,7 @@ import 'screens/chat_screen.dart';
 import 'screens/past_chats_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/analytics_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized(); // Ensure widgets are initialized
@@ -43,6 +44,7 @@ class MyApp extends StatelessWidget {
         '/pastChats': (context) => const PastChatsScreen(),
         '/profile': (context) => const ProfileScreen(),
         '/settings': (context) => const SettingsScreen(),
+        '/analytics': (context) => const AnalyticsScreen(),
       },
     );
   }

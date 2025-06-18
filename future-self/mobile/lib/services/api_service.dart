@@ -162,4 +162,113 @@ class ApiService {
       rethrow;
     }
   }
+
+  // NLP Services
+  
+  /// Analyze emotion in a message
+  Future<Map<String, dynamic>> analyzeEmotion(String message, String userId) async {
+    return _retryRequest(() async {
+      final response = await _client
+          .post(
+            Uri.parse('$baseUrl/nlp/emotion'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'message': message, 'user_id': userId}),
+          )
+          .timeout(const Duration(seconds: ApiConfig.timeoutDuration));
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        throw HttpException('Failed to analyze emotion: ${response.statusCode} ${response.body}');
+      }
+    });
+  }
+
+  /// Analyze bias in a message
+  Future<Map<String, dynamic>> analyzeBias(String message, String userId) async {
+    return _retryRequest(() async {
+      final response = await _client
+          .post(
+            Uri.parse('$baseUrl/nlp/bias'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'message': message, 'user_id': userId}),
+          )
+          .timeout(const Duration(seconds: ApiConfig.timeoutDuration));
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        throw HttpException('Failed to analyze bias: ${response.statusCode} ${response.body}');
+      }
+    });
+  }
+
+  /// Get analytics for a user
+  Future<Map<String, dynamic>> getAnalytics(String userId, {String? timeframe}) async {
+    return _retryRequest(() async {
+      final uri = Uri.parse('$baseUrl/nlp/analytics/$userId');
+      final uriWithQuery = timeframe != null 
+          ? uri.replace(queryParameters: {'timeframe': timeframe})
+          : uri;
+      
+      final response = await _client
+          .get(
+            uriWithQuery,
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: ApiConfig.timeoutDuration));
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        throw HttpException('Failed to get analytics: ${response.statusCode} ${response.body}');
+      }
+    });
+  }
+
+  /// Get emotion trends for a user
+  Future<Map<String, dynamic>> getEmotionTrends(String userId, {String? timeframe}) async {
+    return _retryRequest(() async {
+      final uri = Uri.parse('$baseUrl/nlp/emotion-trends/$userId');
+      final uriWithQuery = timeframe != null 
+          ? uri.replace(queryParameters: {'timeframe': timeframe})
+          : uri;
+      
+      final response = await _client
+          .get(
+            uriWithQuery,
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: ApiConfig.timeoutDuration));
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        throw HttpException('Failed to get emotion trends: ${response.statusCode} ${response.body}');
+      }
+    });
+  }
+
+  /// Get bias patterns for a user
+  Future<Map<String, dynamic>> getBiasPatterns(String userId, {String? timeframe}) async {
+    return _retryRequest(() async {
+      final uri = Uri.parse('$baseUrl/nlp/bias-patterns/$userId');
+      final uriWithQuery = timeframe != null 
+          ? uri.replace(queryParameters: {'timeframe': timeframe})
+          : uri;
+      
+      final response = await _client
+          .get(
+            uriWithQuery,
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: ApiConfig.timeoutDuration));
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        throw HttpException('Failed to get bias patterns: ${response.statusCode} ${response.body}');
+      }
+    });
+  }
 }

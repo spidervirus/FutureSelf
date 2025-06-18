@@ -7,6 +7,9 @@ import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
 
 import '../services/api_service.dart';
 import '../services/api_exception.dart';
+import '../services/nlp_service.dart';
+import '../providers/nlp_provider.dart';
+import '../models/nlp_models.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -24,6 +27,7 @@ class ChatScreenState extends State<ChatScreen> {
   StreamSubscription<Uint8List>? _audioStreamSubscription;
   final List<int> _audioBytes = [];
   final ApiService _apiService = ApiService();
+  late final NlpProvider _nlpProvider;
   
   String _preferredCommunicationMethod = 'chat';
   bool _isLoadingPreferences = true;
@@ -35,13 +39,207 @@ class ChatScreenState extends State<ChatScreen> {
   List<Map<String, dynamic>> _pastChatSessions = [];
   bool _isLoadingPastChats = true;
   bool _isInitialLoad = true; // Flag to manage initial message loading
+  
+  // NLP-related state
+  EmotionAnalysis? _currentEmotion;
+  BiasAnalysis? _currentBias;
+  bool _showNlpInsights = false;
 
   @override
   void initState() {
     super.initState();
+    _nlpProvider = NlpProvider();
+    _nlpProvider.addListener(_onNlpStateChanged);
     _loadUserPreferences();
     _fetchPastChatSessions();
-   }
+  }
+  
+  void _onNlpStateChanged() {
+    if (mounted) {
+      setState(() {
+        _currentEmotion = _nlpProvider.currentEmotion;
+        _currentBias = _nlpProvider.currentBias;
+      });
+    }
+  }
+  
+
+  
+  /// Analyze user message for emotion and bias
+  Future<void> _analyzeUserMessage(String message, String userId) async {
+    try {
+      // Analyze the message using the NLP provider
+      await _nlpProvider.analyzeMessage(message, userId);
+    } catch (e) {
+      debugPrint('Error analyzing message: $e');
+    }
+  }
+  
+  /// Build the NLP insights panel
+  Widget _buildNlpInsightsPanel() {
+    return Container(
+      padding: const EdgeInsets.all(16.0),
+      margin: const EdgeInsets.all(8.0),
+      decoration: BoxDecoration(
+        color: Colors.grey[100],
+        borderRadius: BorderRadius.circular(12.0),
+        border: Border.all(color: Colors.grey[300]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.psychology, color: Colors.blue),
+              const SizedBox(width: 8),
+              const Text(
+                'NLP Insights',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const Spacer(),
+              if (_nlpProvider.isAnyLoading)
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          
+          // Emotion Analysis
+          if (_currentEmotion != null) ...[
+            _buildEmotionCard(_currentEmotion!),
+            const SizedBox(height: 8),
+          ],
+          
+          // Bias Analysis
+          if (_currentBias != null) ...[
+            _buildBiasCard(_currentBias!),
+            const SizedBox(height: 8),
+          ],
+          
+          // Show message if no analysis available
+          if (_currentEmotion == null && _currentBias == null && !_nlpProvider.isAnyLoading)
+            const Text(
+              'Send a message to see emotion and bias analysis',
+              style: TextStyle(color: Colors.grey),
+            ),
+        ],
+      ),
+    );
+  }
+  
+  /// Build emotion analysis card
+  Widget _buildEmotionCard(EmotionAnalysis emotion) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  NlpService.getEmotionEmoji(emotion.primaryEmotion),
+                  style: const TextStyle(fontSize: 20),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  emotion.primaryEmotion.toUpperCase(),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Color(int.parse('0xFF${NlpService.getEmotionColor(emotion.primaryEmotion).substring(1)}')),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    NlpService.formatEmotionScore(emotion.confidence),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (emotion.sentiment != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Sentiment: ${emotion.sentiment}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+  
+  /// Build bias analysis card
+  Widget _buildBiasCard(BiasAnalysis bias) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.balance, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  'BIAS ANALYSIS',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Color(int.parse('0xFF${NlpService.getBiasSeverityColor(bias.riskLevel).substring(1)}')),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    bias.riskLevel.toUpperCase(),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Score: ${NlpService.formatBiasScore(bias.overallBiasScore)}',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            if (bias.detectedBiases.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Detected: ${bias.detectedBiases.map((b) => b.type).join(', ')}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 
   Future<void> _fetchPastChatSessions() async {
     if (!mounted) return;
@@ -277,6 +475,7 @@ class ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _nlpProvider.removeListener(_onNlpStateChanged);
     _messageController.dispose();
     _recorder.dispose();
     _audioStreamSubscription?.cancel();
@@ -310,6 +509,9 @@ class ChatScreenState extends State<ChatScreen> {
       });
       _saveMessageToDatabase(userMessage);
       _messageController.clear();
+      
+      // Analyze the user message with NLP services
+      _analyzeUserMessage(text, user.id);
 
       try {
         // Create a placeholder message for the AI response that will be updated incrementally
@@ -499,6 +701,29 @@ class ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         title: const Text('Chat with Future Self'),
         actions: [
+          // NLP Status Indicator
+          if (_nlpProvider.isAnyLoading)
+            const Padding(
+              padding: EdgeInsets.all(16.0),
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          // NLP Insights Toggle
+          IconButton(
+            icon: Icon(
+              _showNlpInsights ? Icons.psychology : Icons.psychology_outlined,
+              color: _showNlpInsights ? Colors.blue : null,
+            ),
+            onPressed: () {
+              setState(() {
+                _showNlpInsights = !_showNlpInsights;
+              });
+            },
+            tooltip: 'Toggle NLP Insights',
+          ),
           IconButton(
             icon: Icon(_preferredCommunicationMethod == 'voice' ? Icons.mic : Icons.chat_bubble_outline),
             onPressed: () {
@@ -555,6 +780,23 @@ class ChatScreenState extends State<ChatScreen> {
                 }
               },
             ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.analytics),
+              title: const Text('Analytics'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.pushNamed(context, '/analytics');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.home),
+              title: const Text('Home'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.pushReplacementNamed(context, '/home');
+              },
+            ),
           ],
         ),
       ),
@@ -565,6 +807,9 @@ class ChatScreenState extends State<ChatScreen> {
               padding: EdgeInsets.all(8.0),
               child: Center(child: CircularProgressIndicator()),
             ),
+          // NLP Insights Panel
+          if (_showNlpInsights)
+            _buildNlpInsightsPanel(),
           Expanded(
             child: ListView.builder(
               reverse: true,
