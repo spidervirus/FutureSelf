@@ -1124,14 +1124,25 @@ async def get_emotion_chart_endpoint(user_id: str, days: int = 30):
 
 # NLP Endpoints for compatibility with frontend
 @app.post('/nlp/emotion', response_model=EmotionAnalysisTaskResponse)
-async def nlp_emotion_endpoint(request: EmotionAnalysisRequest = Body(...)):
+async def nlp_emotion_endpoint(request: dict = Body(...)):
     """Compatibility endpoint for /nlp/emotion that redirects to /analyze-emotion"""
-    return await analyze_emotion_endpoint(request)
+    # Convert 'message' field to 'text' field
+    emotion_request = EmotionAnalysisRequest(
+        text=request.get('message', ''),
+        user_id=request.get('user_id', ''),
+        audio_file=request.get('audio_file')
+    )
+    return await analyze_emotion_endpoint(emotion_request)
 
 @app.post('/nlp/bias', response_model=BiasAnalysisTaskResponse)
-async def nlp_bias_endpoint(request: BiasAnalysisRequest = Body(...)):
+async def nlp_bias_endpoint(request: dict = Body(...)):
     """Compatibility endpoint for /nlp/bias that redirects to /analyze-bias"""
-    return await analyze_bias_endpoint(request)
+    # Convert 'message' field to 'text' field
+    bias_request = BiasAnalysisRequest(
+        text=request.get('message', ''),
+        user_id=request.get('user_id', '')
+    )
+    return await analyze_bias_endpoint(bias_request)
 
 # Add this new endpoint for streaming responses
 @app.post('/chat/stream')
