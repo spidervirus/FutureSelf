@@ -268,7 +268,6 @@ def create_future_self_prompt(user_message: str, user_profile: dict, conversatio
     nationality = user_profile.get("nationality", "")
     current_location = user_profile.get("current_location", "")
     future_self_description = user_profile.get("future_self_description", "")
-    preferred_tone = user_profile.get("preferred_tone", "")
     
     # Personal reflection insights
     mind_space = user_profile.get("mind_space", "")
@@ -293,7 +292,6 @@ def create_future_self_prompt(user_message: str, user_profile: dict, conversatio
     message_preference = user_profile.get("message_preference", "")
     messaging_frequency = user_profile.get("messaging_frequency", "")
     emoji_usage_preference = user_profile.get("emoji_usage_preference", "")
-    preferred_tone = user_profile.get("preferred_tone", "")
     
     # Build persona context
     persona_context = ""
@@ -612,7 +610,7 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
     try:
         user_response = supabase.table("users").select("""
             communication_style, name, nationality, birth_country, date_of_birth, current_location,
-            future_self_description, preferred_tone, mind_space, future_proud, most_yourself,
+            future_self_description, mind_space, future_proud, most_yourself,
             low_moments, spiral_reminder, change_goal, avoid_tendency, feeling_description,
             future_description, future_age, typical_day, accomplishment, words_slang,
             message_preference, messaging_frequency, emoji_usage_preference,
@@ -1212,7 +1210,7 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
     try:
         user_response = supabase.table("users").select("""
             communication_style, name, nationality, birth_country, date_of_birth, current_location,
-            future_self_description, preferred_tone, mind_space, future_proud, most_yourself,
+            future_self_description, mind_space, future_proud, most_yourself,
             low_moments, spiral_reminder, change_goal, avoid_tendency, feeling_description,
             future_description, future_age, typical_day, accomplishment, words_slang,
             message_preference, messaging_frequency, emoji_usage_preference,
