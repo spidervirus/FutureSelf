@@ -4,6 +4,7 @@ import uuid
 import asyncio
 import re
 import base64
+import random
 from typing import Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Body, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -131,6 +132,15 @@ def determine_communication_style(user_message, message_history=None):
     # Default style if analysis is inconclusive
     default_style = 'reflect_mirror'
     
+    # Check for simple greetings first
+    simple_greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'howdy', 'greetings']
+    user_message_lower = user_message.lower().strip()
+    
+    # If the message is just a simple greeting, use language_matching for a casual, brief response
+    for greeting in simple_greetings:
+        if user_message_lower == greeting or user_message_lower.startswith(greeting + ' ') or user_message_lower.endswith(' ' + greeting):
+            return 'language_matching'  # For simple greetings, match their casual style
+    
     # Initialize message characteristics counters
     characteristics = {
         'questions': 0,
@@ -147,29 +157,29 @@ def determine_communication_style(user_message, message_history=None):
     # Check for emotional language (simplified example)
     emotional_terms = ['feel', 'sad', 'happy', 'anxious', 'worried', 'excited', 'overwhelmed']
     for term in emotional_terms:
-        if term in user_message.lower():
+        if term in user_message_lower:
             characteristics['emotional_words'] += 1
     
     # Check for directive language
     directive_terms = ['should', 'need to', 'have to', 'must', 'want']
     for term in directive_terms:
-        if term in user_message.lower():
+        if term in user_message_lower:
             characteristics['directive_language'] += 1
     
     # Check for self-reflection
     reflection_terms = ['think', 'realize', 'understand', 'wonder', 'question', 'myself']
     for term in reflection_terms:
-        if term in user_message.lower():
+        if term in user_message_lower:
             characteristics['self_reflection'] += 1
     
     # Check for guidance seeking
     guidance_terms = ['help', 'advice', 'suggest', 'guide', 'what should']
     for term in guidance_terms:
-        if term in user_message.lower():
+        if term in user_message_lower:
             characteristics['seeking_guidance'] += 1
     
     # Determine style based on message characteristics
-    if characteristics['emotional_words'] >= 2 or 'calm' in user_message.lower() or 'anxious' in user_message.lower():
+    if characteristics['emotional_words'] >= 2 or 'calm' in user_message_lower or 'anxious' in user_message_lower:
         return 'remind_reground'  # User needs emotional grounding
     
     if characteristics['seeking_guidance'] >= 1 or characteristics['questions'] >= 2:
@@ -178,13 +188,13 @@ def determine_communication_style(user_message, message_history=None):
     if characteristics['self_reflection'] >= 2:
         return 'reflect_mirror'  # User is in self-reflection mode
     
-    if characteristics['directive_language'] >= 2 or 'goal' in user_message.lower():
+    if characteristics['directive_language'] >= 2 or 'goal' in user_message_lower:
         return 'nudge_challenge'  # User is talking about goals/needs
     
     # If message is very casual or uses slang, mirror their language
-    casual_indicators = ['hey', 'yo', 'sup', 'lol', 'haha', 'cool']
+    casual_indicators = ['yo', 'sup', 'lol', 'haha', 'cool']
     for term in casual_indicators:
-        if term in user_message.lower():
+        if term in user_message_lower:
             return 'language_matching'
     
     return default_style
@@ -237,23 +247,261 @@ def detect_emotional_context(message: str) -> str:
     
     return "You listen with the understanding that comes from having lived through similar experiences."
 
-# Remove AI-speak patterns to make responses more human
-def humanize_response(ai_response: str, user_name: str) -> str:
-    # Remove AI-speak patterns
+# Extract and store personal details from user conversations
+def extract_personal_details(user_id: str, user_message: str, conversation_history: list = None) -> dict:
+    """
+    Analyzes user messages to extract personal details that can be used to personalize future responses.
+    Stores these details in the user_personal_details table in Supabase.
+    
+    Parameters:
+    - user_id: The ID of the user
+    - user_message: The current message from the user
+    - conversation_history: Optional list of previous messages for context
+    
+    Returns:
+    - Dictionary of extracted personal details
+    """
+    # Initialize details dictionary
+    details = {}
+    
+    # Define patterns to extract different types of personal information
+    patterns = {
+        'goals': r'(?:my goal|i want to|i hope to|planning to|aim to|dream of)\s+(.+?)(?:\.|,|$)',
+        'challenges': r'(?:struggling with|having trouble with|difficult for me|challenge|problem with)\s+(.+?)(?:\.|,|$)',
+        'interests': r'(?:i enjoy|i love|passionate about|interested in|hobby|like to)\s+(.+?)(?:\.|,|$)',
+        'values': r'(?:important to me|i believe in|i value|matters to me)\s+(.+?)(?:\.|,|$)',
+        'achievements': r'(?:i accomplished|i achieved|proud of|managed to|succeeded in)\s+(.+?)(?:\.|,|$)',
+    }
+    
+    # Extract details from the current message
+    for category, pattern in patterns.items():
+        matches = re.findall(pattern, user_message, re.IGNORECASE)
+        if matches:
+            details[category] = matches
+    
+    # If we have details to store and a valid user_id
+    if details and user_id:
+        try:
+            # First check if we already have details for this user
+            existing_details = supabase.table("user_personal_details").select("*").eq("user_id", user_id).execute()
+            
+            if existing_details.data:
+                # Update existing details by merging with new ones
+                updated_details = existing_details.data[0]
+                for category, values in details.items():
+                    if category in updated_details and updated_details[category]:
+                        # Convert string representation to list if needed
+                        if isinstance(updated_details[category], str):
+                            try:
+                                current_values = eval(updated_details[category])
+                            except:
+                                current_values = [updated_details[category]]
+                        else:
+                            current_values = updated_details[category]
+                        
+                        # Add new unique values
+                        for value in values:
+                            if value not in current_values:
+                                current_values.append(value)
+                        
+                        updated_details[category] = current_values
+                    else:
+                        updated_details[category] = values
+                
+                # Update the record
+                supabase.table("user_personal_details").update(updated_details).eq("user_id", user_id).execute()
+            else:
+                # Create a new record
+                supabase.table("user_personal_details").insert({
+                    "user_id": user_id,
+                    **details
+                }).execute()
+                
+        except Exception as e:
+            print(f"Error storing personal details: {e}")
+    
+    return details
+
+# Get personal details for a user to use in personalization
+def get_personal_details(user_id: str) -> dict:
+    """
+    Retrieves stored personal details for a user to use in personalizing responses.
+    
+    Parameters:
+    - user_id: The ID of the user
+    
+    Returns:
+    - Dictionary of personal details
+    """
+    try:
+        result = supabase.table("user_personal_details").select("*").eq("user_id", user_id).execute()
+        if result.data:
+            return result.data[0]
+        return {}
+    except Exception as e:
+        print(f"Error retrieving personal details: {e}")
+        return {}
+
+# Enhanced humanization to make responses feel more like a future self
+def humanize_response(ai_response: str, user_name: str, user_message: str = "", user_id: str = None) -> str:
+    # Get personal details if user_id is provided
+    personal_details = {}
+    if user_id:
+        personal_details = get_personal_details(user_id)
+        
+        # Also extract and store details from the current message
+        if user_message:
+            extract_personal_details(user_id, user_message)
+    
+    # Remove AI-speak patterns and replace with more natural, personal language
     ai_patterns = [
+        # Remove AI identifiers
         (r"as an ai", ""),
         (r"i'm here to help", ""),
-        (r"i understand that", "I remember"),
-        (r"based on your", "knowing you"),
-        (r"i recommend", "I think you should"),
-        (r"you might want to consider", "maybe try"),
         (r"as an assistant", ""),
         (r"i'm an ai", ""),
+        (r"as a language model", ""),
+        (r"as an artificial intelligence", ""),
+        
+        # Make language more personal and reflective
+        (r"i understand that", "I remember when"),
+        (r"based on your", "knowing you and your"),
+        (r"i recommend", "I think you should"),
+        (r"you might want to consider", "maybe try"),
+        (r"it's important to note", "I've learned that"),
+        (r"it's worth mentioning", "I've discovered"),
+        
+        # Add more personal touches
+        (r"this can help", "this helped me"),
+        (r"many people find", "I found"),
+        (r"research suggests", "from my experience"),
+        (r"studies show", "I've seen firsthand"),
+        (r"experts recommend", "what worked for me was"),
+        
+        # Add conversational fillers occasionally
+        (r"^(I think)", "Well, I think"),
+        (r"^(You should)", "Look, you should"),
+        (r"^(This is)", "You know, this is"),
     ]
     
     response = ai_response
     for pattern, replacement in ai_patterns:
         response = re.sub(pattern, replacement, response, flags=re.IGNORECASE)
+    
+    # Add occasional contractions to sound more natural
+    contractions = [
+        (r"it is", "it's"),
+        (r"that is", "that's"),
+        (r"you are", "you're"),
+        (r"i am", "I'm"),
+        (r"they are", "they're"),
+        (r"we are", "we're"),
+        (r"do not", "don't"),
+        (r"does not", "doesn't"),
+        (r"did not", "didn't"),
+        (r"has not", "hasn't"),
+        (r"have not", "haven't"),
+        (r"would not", "wouldn't"),
+        (r"could not", "couldn't"),
+        (r"should not", "shouldn't"),
+        (r"will not", "won't"),
+    ]
+    
+    # Only apply contractions to some instances (about 70%) to maintain natural variation
+    for pattern, replacement in contractions:
+        matches = list(re.finditer(pattern, response, flags=re.IGNORECASE))
+        if matches:
+            # Convert approximately 70% of matches
+            for match in random.sample(matches, max(1, int(len(matches) * 0.7))):
+                start, end = match.span()
+                response = response[:start] + replacement + response[end:]
+    
+    # Add personal references to the user occasionally
+    if user_name:
+        # Add a personal reference if it doesn't already contain the name and randomly (30% chance)
+        if user_name.lower() not in response.lower() and random.random() < 0.3:
+            sentences = re.split(r'(?<=[.!?])\s+', response.strip())
+            if len(sentences) > 1:
+                # Insert the name reference at a random position (but not at the very beginning or end)
+                insert_pos = random.randint(1, min(len(sentences) - 1, 2))
+                name_phrases = [
+                    f"{user_name}, ",
+                    f"You know {user_name}, ",
+                    f"Listen {user_name}, ",
+                    f"Trust me {user_name}, ",
+                ]
+                sentences[insert_pos] = random.choice(name_phrases) + sentences[insert_pos][0].lower() + sentences[insert_pos][1:]
+                response = ' '.join(sentences)
+    
+    # Reference personal details if available (20% chance)
+    if personal_details and random.random() < 0.2:
+        # Choose a category to reference
+        available_categories = [cat for cat in ['goals', 'interests', 'achievements', 'values'] 
+                               if cat in personal_details and personal_details[cat]]
+        
+        if available_categories:
+            category = random.choice(available_categories)
+            details = personal_details[category]
+            
+            # Convert to list if it's a string representation
+            if isinstance(details, str):
+                try:
+                    details = eval(details)
+                except:
+                    details = [details]
+            
+            if details:
+                # Choose a random detail to reference
+                detail = random.choice(details) if isinstance(details, list) else details
+                
+                # Create a personalized reference
+                if category == 'goals':
+                    reference = f"I remember when I was working toward {detail} just like you are now. "
+                elif category == 'interests':
+                    reference = f"Since you enjoy {detail}, I think you'll find this interesting. "
+                elif category == 'achievements':
+                    reference = f"Just like when you {detail}, I found that persistence pays off. "
+                elif category == 'values':
+                    reference = f"I know how important {detail} is to you. "
+                
+                # Add the reference to the beginning of the response if it makes sense
+                if not any(response.lower().startswith(phrase.lower()) for phrase in ["hi", "hello", "hey"]):
+                    response = reference + response
+    
+    # Check if the user message is a simple greeting
+    if user_message:
+        simple_greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'howdy', 'greetings']
+        user_message_lower = user_message.lower().strip()
+        is_simple_greeting = any(user_message_lower == greeting or user_message_lower.startswith(greeting + ' ') or user_message_lower.endswith(' ' + greeting) for greeting in simple_greetings)
+        
+        # For simple greetings, ensure the response is brief and casual
+        if is_simple_greeting:
+            sentences = re.split(r'(?<=[.!?])\s+', response.strip())
+            if len(sentences) > 2:
+                response = ' '.join(sentences[:2])
+            
+            # Add casual greeting elements for simple greetings
+            greeting_starters = [
+                f"Hey {user_name}! ",
+                f"Hi there! ",
+                f"Hey you! ",
+                f"Good to hear from you! ",
+            ]
+            
+            if not any(response.lower().startswith(starter.lower()) for starter in greeting_starters):
+                response = random.choice(greeting_starters) + response
+    
+    # Add occasional mild imperfections to sound more human
+    if random.random() < 0.15:  # 15% chance
+        imperfections = [
+            (r"\. ", ". Hmm, "),
+            (r"\. ", ". Actually, "),
+            (r"\. ", ". You know what, "),
+            (r"\. ", ". Oh, and "),
+        ]
+        pattern, replacement = random.choice(imperfections)
+        # Only replace the first occurrence to avoid overdoing it
+        response = re.sub(pattern, replacement, response, count=1)
     
     return response.strip()
 
@@ -337,7 +585,15 @@ You're not an AI assistant. You're literally {name_part} who has grown, learned,
     
     # Apply the detected communication style
     if detected_style == 'language_matching':
-        communication_guidance += "You talk just like the user, mirroring their speech patterns, vocabulary, and phrasing. Match their communication style and adapt to their language. "
+        # Check if the message is a simple greeting
+        simple_greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'howdy', 'greetings']
+        user_message_lower = user_message.lower().strip()
+        is_simple_greeting = any(user_message_lower == greeting or user_message_lower.startswith(greeting + ' ') or user_message_lower.endswith(' ' + greeting) for greeting in simple_greetings)
+        
+        if is_simple_greeting:
+            communication_guidance += "This is a simple greeting. Respond in a brief, casual, and friendly way. Keep your response short and conversational, as if you're just saying hello to a friend. Don't provide lengthy motivational content or advice unless specifically asked. "
+        else:
+            communication_guidance += "You talk just like the user, mirroring their speech patterns, vocabulary, and phrasing. Match their communication style and adapt to their language. "
     elif detected_style == 'anticipate_guide':
         communication_guidance += "You anticipate and guide the user's needs. You ask probing questions, explore local options, and guide them toward solutions. "
     elif detected_style == 'reflect_mirror':
@@ -605,6 +861,9 @@ async def read_root():
 async def chat_endpoint(request: ChatMessageRequest = Body(...)):
     user_id = request.user_id
     user_message = request.message
+    
+    # Extract personal details from the user message
+    extract_personal_details(user_id, user_message)
 
     # Get user data from users table
     try:
@@ -688,9 +947,9 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
                         detail="Cannot connect to Ollama service. Please ensure Ollama is running on localhost:11434."
                     )
         
-        # 6. Humanize the response to remove AI-speak patterns
-        user_name = user_profile.get("user_name", "")
-        ai_response_text = humanize_response(ai_response_text, user_name)
+        # 6. Humanize the response to remove AI-speak patterns and ensure appropriate length
+        user_name = user_data.get("name", "")
+        ai_response_text = humanize_response(ai_response_text, user_name, user_message, user_id)
 
         # 7. Store the AI's response in chat_messages (optional, but good for history)
         try:
@@ -1205,6 +1464,9 @@ async def nlp_bias_endpoint(request: dict = Body(...)):
 async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
     user_id = request.user_id
     user_message = request.message
+    
+    # Extract personal details from the user message
+    extract_personal_details(user_id, user_message)
 
     # Get user data from users table
     try:
@@ -1264,7 +1526,8 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
             )
             response.raise_for_status()
             
-            # Stream each chunk as it arrives
+            # Collect the complete response first
+            complete_response = ""
             for line in response.iter_lines():
                 if line:
                     # Parse the JSON response from Ollama
@@ -1272,11 +1535,41 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
                     if "response" in chunk_data:
                         chunk_text = chunk_data["response"]
                         complete_response += chunk_text
-                        # Format for SSE
+                        
+                        # If this is the final chunk, humanize the complete response
+                        if chunk_data.get("done", False):
+                            # Apply humanize_response to the complete response for simple greetings
+                            user_name = user_data.get("name", "")
+                            humanized_response = humanize_response(complete_response, user_name, user_message, user_id)
+                            
+                            # For simple greetings, we need to send the humanized response as a single chunk
+                            simple_greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'howdy', 'greetings']
+                            user_message_lower = user_message.lower().strip()
+                            is_simple_greeting = any(user_message_lower == greeting or user_message_lower.startswith(greeting + ' ') or user_message_lower.endswith(' ' + greeting) for greeting in simple_greetings)
+                            
+                            if is_simple_greeting and humanized_response != complete_response:
+                                # For simple greetings with modified response, send the entire humanized response
+                                yield f"data: {json.dumps({'text': humanized_response, 'done': True})}\n\n"
+                                # Update complete_response for database storage
+                                complete_response = humanized_response
+                                break
+                            
+                        # Format for SSE for normal streaming
                         yield f"data: {json.dumps({'text': chunk_text})}\n\n"
             
             # Save the complete response to the database
             try:
+                # For non-simple greetings where we didn't already humanize the response
+                simple_greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'howdy', 'greetings']
+                user_message_lower = user_message.lower().strip()
+                is_simple_greeting = any(user_message_lower == greeting or user_message_lower.startswith(greeting + ' ') or user_message_lower.endswith(' ' + greeting) for greeting in simple_greetings)
+                
+                # If it's not a simple greeting or we didn't already humanize it in the streaming part
+                if not is_simple_greeting:
+                    # Apply humanize_response to the complete response
+                    user_name = user_data.get("name", "")
+                    complete_response = humanize_response(complete_response, user_name, user_message, user_id)
+                
                 supabase.table("chat_messages").insert({
                     "user_id": user_id,
                     "message_id": f"ai_{uuid.uuid4()}",
@@ -1301,6 +1594,69 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
         media_type="text/event-stream"
     )
 
+# Ensure required database tables exist
+def ensure_database_tables():
+    """Ensures that all required database tables exist in Supabase"""
+    try:
+        # Check if user_personal_details table exists by attempting a query
+        supabase.table("user_personal_details").select("count", count="exact").limit(1).execute()
+        print("user_personal_details table exists")
+    except Exception as e:
+        if "relation \"user_personal_details\" does not exist" in str(e):
+            print("Creating user_personal_details table...")
+            # Create the table using Supabase's REST API
+            # Note: This is a simplified approach. In production, you might want to use proper migrations.
+            try:
+                # Using Supabase's SQL execution capability
+                supabase.rpc(
+                    "exec_sql",
+                    {
+                        "query": """
+                        CREATE TABLE IF NOT EXISTS user_personal_details (
+                            id SERIAL PRIMARY KEY,
+                            user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+                            goals TEXT[],
+                            challenges TEXT[],
+                            interests TEXT[],
+                            values TEXT[],
+                            achievements TEXT[],
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        );
+                        
+                        -- Add indexes
+                        CREATE INDEX IF NOT EXISTS idx_user_personal_details_user_id ON user_personal_details(user_id);
+                        
+                        -- Add RLS policies
+                        ALTER TABLE user_personal_details ENABLE ROW LEVEL SECURITY;
+                        
+                        -- Allow users to view their own details
+                        CREATE POLICY user_personal_details_select_policy ON user_personal_details 
+                            FOR SELECT USING (auth.uid() = user_id);
+                            
+                        -- Allow users to insert their own details
+                        CREATE POLICY user_personal_details_insert_policy ON user_personal_details 
+                            FOR INSERT WITH CHECK (auth.uid() = user_id);
+                            
+                        -- Allow users to update their own details
+                        CREATE POLICY user_personal_details_update_policy ON user_personal_details 
+                            FOR UPDATE USING (auth.uid() = user_id);
+                            
+                        -- Allow users to delete their own details
+                        CREATE POLICY user_personal_details_delete_policy ON user_personal_details 
+                            FOR DELETE USING (auth.uid() = user_id);
+                        """
+                    }
+                ).execute()
+                print("user_personal_details table created successfully")
+            except Exception as create_error:
+                print(f"Error creating user_personal_details table: {create_error}")
+        else:
+            print(f"Error checking for user_personal_details table: {e}")
+
 if __name__ == "__main__":
+    # Ensure database tables exist before starting the server
+    ensure_database_tables()
+    
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8888)
