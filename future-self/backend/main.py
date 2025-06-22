@@ -343,7 +343,87 @@ def get_personal_details(user_id: str) -> dict:
         return {}
 
 # Enhanced humanization to make responses feel more like a future self
-def humanize_response(ai_response: str, user_name: str, user_message: str = "", user_id: str = None) -> str:
+def apply_typing_quirks(response: str, user_profile: dict) -> str:
+    """Apply user-specific typing quirks based on their profile preferences."""
+    if not user_profile:
+        return response
+    
+    # Get user preferences
+    message_preference = user_profile.get("message_preference", "")
+    emoji_usage_preference = user_profile.get("emoji_usage_preference", "")
+    words_slang = user_profile.get("words_slang", "")
+    
+    # Apply message length preference
+    if message_preference and "short" in message_preference.lower():
+        # For short message preference, trim longer responses
+        sentences = re.split(r'(?<=[.!?])\s+', response.strip())
+        if len(sentences) > 3:
+            # Keep only first 2-3 sentences for users who prefer short messages
+            response = ' '.join(sentences[:random.randint(2, 3)])
+    
+    # Apply emoji usage preference
+    if emoji_usage_preference:
+        # Count current emojis
+        emoji_pattern = re.compile("["
+                               u"\U0001F600-\U0001F64F"  # emoticons
+                               u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+                               u"\U0001F680-\U0001F6FF"  # transport & map symbols
+                               u"\U0001F700-\U0001F77F"  # alchemical symbols
+                               u"\U0001F780-\U0001F7FF"  # Geometric Shapes
+                               u"\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
+                               u"\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+                               u"\U0001FA00-\U0001FA6F"  # Chess Symbols
+                               u"\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
+                               u"\U00002702-\U000027B0"  # Dingbats
+                               u"\U000024C2-\U0001F251" 
+                               "]+", flags=re.UNICODE)
+        current_emoji_count = len(emoji_pattern.findall(response))
+        
+        if "high" in emoji_usage_preference.lower() and current_emoji_count < 2:
+            # Add more emojis for users who prefer high emoji usage
+            all_emojis = ["😊", "👍", "💪", "🙌", "✨", "🔥", "🤔", "👀", "🙂", "👋", "❤️", "🫂", "🤗", "😂", "🎉", "👏", "💯"]
+            
+            # Add 1-3 more emojis at sentence endings
+            sentences = re.split(r'(?<=[.!?])\s+', response.strip())
+            for _ in range(min(3, len(sentences))):
+                if len(sentences) > 1:
+                    insert_pos = random.randint(0, len(sentences) - 1)
+                    sentences[insert_pos] = sentences[insert_pos].rstrip('.!?') + f" {random.choice(all_emojis)}" + sentences[insert_pos][-1] if sentences[insert_pos][-1] in '.!?' else sentences[insert_pos] + f" {random.choice(all_emojis)}"
+            response = ' '.join(sentences)
+        elif "low" in emoji_usage_preference.lower() and current_emoji_count > 0:
+            # Remove some emojis for users who prefer low emoji usage
+            response = emoji_pattern.sub("", response)
+    
+    # Apply user's slang/vocabulary preferences
+    if words_slang:
+        # Extract specific slang terms or phrases the user mentioned
+        slang_terms = [term.strip() for term in words_slang.split(',')]
+        
+        # Randomly incorporate 1-2 of their slang terms if appropriate
+        if slang_terms and random.random() < 0.4:  # 40% chance
+            selected_terms = random.sample(slang_terms, min(2, len(slang_terms)))
+            
+            # Insert slang at natural points in the response
+            sentences = re.split(r'(?<=[.!?])\s+', response.strip())
+            if len(sentences) > 1:
+                for term in selected_terms:
+                    insert_pos = random.randint(0, len(sentences) - 1)
+                    # Add the slang term as an interjection or replace a common word
+                    if random.random() < 0.5:
+                        # Add as interjection
+                        sentences[insert_pos] = f"{term}! " + sentences[insert_pos]
+                    else:
+                        # Try to replace a common word with the slang term
+                        common_words = ["good", "great", "nice", "cool", "awesome", "amazing"]
+                        for word in common_words:
+                            if word in sentences[insert_pos].lower():
+                                sentences[insert_pos] = re.sub(r'\b' + word + r'\b', term, sentences[insert_pos], flags=re.IGNORECASE, count=1)
+                                break
+                response = ' '.join(sentences)
+    
+    return response
+
+def humanize_response(ai_response: str, user_name: str, user_message: str = "", user_id: str = None, user_profile: dict = None) -> str:
     # Get personal details if user_id is provided
     personal_details = {}
     if user_id:
@@ -352,6 +432,33 @@ def humanize_response(ai_response: str, user_name: str, user_message: str = "", 
         # Also extract and store details from the current message
         if user_message:
             extract_personal_details(user_id, user_message)
+    
+    # Check if the user message is a simple greeting first
+    simple_greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'howdy', 'greetings']
+    is_simple_greeting = False
+    if user_message:
+        user_message_lower = user_message.lower().strip()
+        is_simple_greeting = any(user_message_lower == greeting or user_message_lower.startswith(greeting + ' ') or user_message_lower.endswith(' ' + greeting) for greeting in simple_greetings)
+    
+    # For simple greetings, use a very simple response template
+    if is_simple_greeting:
+        # Use a very simple response template for greetings
+        simple_responses = [
+            f"Hey! How's it going?",
+            f"Hi there! What's up?",
+            f"Hey {user_name}! How are you today?",
+            f"Hi! What's new?",
+            f"Hey! Good to hear from you!",
+        ]
+        response = random.choice(simple_responses)
+        
+        # Occasionally add an emoji (50% chance)
+        if random.random() < 0.5:
+            emojis = ["👋", "😊", "👍", "✌️", "🙂"]
+            response += f" {random.choice(emojis)}"
+        
+        # Skip the rest of the processing for simple greetings
+        return response
     
     # Remove AI-speak patterns and replace with more natural, personal language
     ai_patterns = [
@@ -379,9 +486,15 @@ def humanize_response(ai_response: str, user_name: str, user_message: str = "", 
         (r"experts recommend", "what worked for me was"),
         
         # Add conversational fillers occasionally
-        (r"^(I think)", "Well, I think"),
-        (r"^(You should)", "Look, you should"),
-        (r"^(This is)", "You know, this is"),
+        (r"^(I think)", "I think"),  # Remove the "Well, " prefix for simple messages
+        (r"^(You should)", "You should"),  # Remove the "Look, " prefix for simple messages
+        (r"^(This is)", "This is"),  # Remove the "You know, " prefix for simple messages
+        
+        # Add more texting-like patterns
+        (r"however", "but"),
+        (r"therefore", "so"),
+        (r"additionally", "also"),
+        (r"nevertheless", "still"),
     ]
     
     response = ai_response
@@ -503,7 +616,118 @@ def humanize_response(ai_response: str, user_name: str, user_message: str = "", 
         # Only replace the first occurrence to avoid overdoing it
         response = re.sub(pattern, replacement, response, count=1)
     
+    # Add texting-specific elements
+    if random.random() < 0.3:  # 30% chance
+        texting_elements = [
+            # Add shortened words
+            (r"\byou\b", "u"),
+            (r"\bto\b", "2"),
+            (r"\bfor\b", "4"),
+            (r"\btomorrow\b", "tmrw"),
+            (r"\btoday\b", "2day"),
+            
+            # Add common texting abbreviations
+            (r"\bi don't know\b", "idk"),
+            (r"\bas soon as possible\b", "asap"),
+            (r"\bin my opinion\b", "imo"),
+            (r"\bby the way\b", "btw"),
+        ]
+        
+        # Apply only 1-2 texting elements to avoid overdoing it
+        selected_elements = random.sample(texting_elements, min(2, len(texting_elements)))
+        for pattern, replacement in selected_elements:
+            # Only replace one instance to keep it subtle
+            response = re.sub(pattern, replacement, response, count=1, flags=re.IGNORECASE)
+    
+    # Add occasional emoji based on message sentiment
+    if random.random() < 0.4:  # 40% chance to add emoji
+        positive_emojis = ["😊", "👍", "💪", "🙌", "✨", "🔥"]
+        neutral_emojis = ["🤔", "👀", "🙂", "👋"]
+        supportive_emojis = ["❤️", "🫂", "🤗"]
+        
+        # Simple sentiment detection
+        positive_words = ["good", "great", "happy", "excited", "love", "awesome"]
+        negative_words = ["sad", "bad", "worried", "anxious", "stressed", "upset"]
+        
+        if any(word in response.lower() for word in positive_words):
+            emoji = random.choice(positive_emojis)
+        elif any(word in response.lower() for word in negative_words):
+            emoji = random.choice(supportive_emojis)
+        else:
+            emoji = random.choice(neutral_emojis)
+        
+        # Add emoji at the end of a sentence
+        sentences = re.split(r'(?<=[.!?])\s+', response.strip())
+        if len(sentences) > 1:
+            # Add to a random sentence but not the first or last
+            insert_pos = random.randint(0, len(sentences) - 1)
+            sentences[insert_pos] = sentences[insert_pos].rstrip('.!?') + f" {emoji}" + sentences[insert_pos][-1] if sentences[insert_pos][-1] in '.!?' else sentences[insert_pos] + f" {emoji}"
+            response = ' '.join(sentences)
+        else:
+            # Add to the end if there's only one sentence
+            response = response.rstrip('.!?') + f" {emoji}" + response[-1] if response[-1] in '.!?' else response + f" {emoji}"
+    
+    # Add occasional typos and corrections
+    if random.random() < 0.15:  # 15% chance for typos
+        response = add_realistic_typos(response)
+    
+    # Apply user-specific typing quirks if profile is provided
+    if user_profile:
+        response = apply_typing_quirks(response, user_profile)
+    
     return response.strip()
+
+def add_realistic_typos(text):
+    """Add realistic typos and corrections to text to make it more human-like."""
+    # Common typo patterns
+    typo_patterns = [
+        # Swapped letters
+        (r"\b(\w)(\w)(\w+)\b", r"\2\1\3"),  # Swap first two letters
+        
+        # Missing letters
+        (r"\b(\w+?)ing\b", r"\1in"),  # Missing 'g' in -ing words
+        (r"\b(\w+?)ed\b", r"\1d"),    # Missing 'e' in -ed words
+        
+        # Double letters
+        (r"\b(\w+?)(\w)\b", r"\1\2\2"),  # Double the last letter
+        
+        # Common misspellings
+        (r"\bthat\b", "taht"),
+        (r"\bwith\b", "wiht"),
+        (r"\byour\b", "youre"),
+        (r"\byou're\b", "your"),
+        (r"\bthere\b", "thier"),
+        (r"\btheir\b", "there"),
+        (r"\bthey're\b", "their"),
+    ]
+    
+    # Only apply one typo to avoid making the text unreadable
+    if len(text) > 10:  # Only add typos to longer texts
+        # Split into words
+        words = text.split()
+        
+        if len(words) > 3:
+            # Choose a random word to apply typo to (not first or last word)
+            word_index = random.randint(1, len(words) - 2)
+            word = words[word_index]
+            
+            # Only apply typo to words longer than 3 characters
+            if len(word) > 3 and word.isalpha():
+                # Choose a random typo pattern
+                pattern, replacement = random.choice(typo_patterns)
+                
+                # Apply typo
+                typo_word = re.sub(pattern, replacement, word, count=1)
+                
+                # 50% chance to add a correction
+                if random.random() < 0.5 and typo_word != word:
+                    words[word_index] = f"{typo_word}*{word}"
+                else:
+                    words[word_index] = typo_word
+                
+                return ' '.join(words)
+    
+    return text
 
 # Create natural future self prompt with comprehensive onboarding data
 def create_future_self_prompt(user_message: str, user_profile: dict, conversation_context: list | None = None, weather_events_context: dict | None = None) -> str:
@@ -949,7 +1173,7 @@ async def chat_endpoint(request: ChatMessageRequest = Body(...)):
         
         # 6. Humanize the response to remove AI-speak patterns and ensure appropriate length
         user_name = user_data.get("name", "")
-        ai_response_text = humanize_response(ai_response_text, user_name, user_message, user_id)
+        ai_response_text = humanize_response(ai_response_text, user_name, user_message, user_id, user_data)
 
         # 7. Store the AI's response in chat_messages (optional, but good for history)
         try:
@@ -1540,7 +1764,7 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
                         if chunk_data.get("done", False):
                             # Apply humanize_response to the complete response for simple greetings
                             user_name = user_data.get("name", "")
-                            humanized_response = humanize_response(complete_response, user_name, user_message, user_id)
+                            humanized_response = humanize_response(complete_response, user_name, user_message, user_id, user_data)
                             
                             # For simple greetings, we need to send the humanized response as a single chunk
                             simple_greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'howdy', 'greetings']
@@ -1568,7 +1792,7 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
                 if not is_simple_greeting:
                     # Apply humanize_response to the complete response
                     user_name = user_data.get("name", "")
-                    complete_response = humanize_response(complete_response, user_name, user_message, user_id)
+                    complete_response = humanize_response(complete_response, user_name, user_message, user_id, user_data)
                 
                 supabase.table("chat_messages").insert({
                     "user_id": user_id,
