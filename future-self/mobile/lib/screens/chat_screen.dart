@@ -18,7 +18,7 @@ class ChatScreen extends StatefulWidget {
   ChatScreenState createState() => ChatScreenState();
 }
 
-class ChatScreenState extends State<ChatScreen> {
+class ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final TextEditingController _messageController = TextEditingController();
   final List<types.Message> _messages = [];
   final supabase = Supabase.instance.client;
@@ -52,6 +52,34 @@ class ChatScreenState extends State<ChatScreen> {
     _nlpProvider.addListener(_onNlpStateChanged);
     _loadUserPreferences();
     _fetchPastChatSessions();
+    
+    // Initialize animation controllers for typing indicator
+    for (int i = 0; i < 3; i++) {
+      final controller = AnimationController(
+        duration: const Duration(milliseconds: 1200),
+        vsync: this,
+      );
+      
+      final animation = Tween<double>(
+        begin: 0.0,
+        end: 1.0,
+      ).animate(CurvedAnimation(
+        parent: controller,
+        curve: Interval(
+          i * 0.2, // Stagger the animations
+          0.6 + i * 0.2,
+          curve: Curves.easeInOut,
+        ),
+      ));
+      
+      _dotControllers.add(controller);
+      _dotAnimations.add(animation);
+      
+      // Start the animation with a delay based on the dot index
+      Future.delayed(Duration(milliseconds: i * 300), () {
+        controller.repeat(reverse: true);
+      });
+    }
   }
   
   void _onNlpStateChanged() {
@@ -473,6 +501,55 @@ class ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// Build a typing indicator bubble
+  Widget _buildTypingIndicator(types.TextMessage message) {
+    final bool isUser = message.author.id == supabase.auth.currentUser?.id;
+    
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 8.0),
+        padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
+        decoration: BoxDecoration(
+          color: isUser ? Colors.blue[100] : Colors.grey[300],
+          borderRadius: BorderRadius.circular(20.0),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildDot(0),
+            _buildDot(1),
+            _buildDot(2),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  // Animation controllers for typing indicator dots
+  final List<AnimationController> _dotControllers = [];
+  final List<Animation<double>> _dotAnimations = [];
+  
+  /// Build an animated dot for the typing indicator
+  Widget _buildDot(int index) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 2.0),
+      child: AnimatedBuilder(
+        animation: _dotAnimations[index],
+        builder: (context, child) {
+          return Container(
+            width: 8.0 + (_dotAnimations[index].value * 2.0),
+            height: 8.0 + (_dotAnimations[index].value * 2.0),
+            decoration: BoxDecoration(
+              color: Colors.grey[600],
+              shape: BoxShape.circle,
+            ),
+          );
+        },
+      ),
+    );
+  }
+  
   @override
   void dispose() {
     _nlpProvider.removeListener(_onNlpStateChanged);
@@ -480,6 +557,12 @@ class ChatScreenState extends State<ChatScreen> {
     _recorder.dispose();
     _audioStreamSubscription?.cancel();
     _recordingTimer?.cancel();
+    
+    // Dispose animation controllers
+    for (final controller in _dotControllers) {
+      controller.dispose();
+    }
+    
     super.dispose();
   }
 
@@ -529,21 +612,57 @@ class ChatScreenState extends State<ChatScreen> {
           });
         }
         
-        // Use the streaming API
+        // Use the streaming API with typing indicator
         String completeResponse = '';
-        await for (final chunk in _apiService.streamMessage(text, user.id)) {
-          completeResponse += chunk;
-          if (mounted) {
-            setState(() {
-              // Find the placeholder message and update its text
-              final index = _messages.indexWhere((msg) => msg.id == aiMessageId);
-              if (index != -1) {
-                final currentMessage = _messages[index] as types.TextMessage;
-                _messages[index] = currentMessage.copyWith(
-                  text: completeResponse,
-                );
-              }
-            });
+        bool isTyping = false;
+        
+        // Find the placeholder message index
+        final placeholderIndex = _messages.indexWhere((msg) => msg.id == aiMessageId);
+        
+        await for (final chunk in _apiService.streamMessageWithTyping(text, user.id)) {
+          if (chunk['type'] == 'typing') {
+            // Handle typing indicator
+            final bool typingStatus = chunk['isTyping'];
+            
+            if (mounted && typingStatus != isTyping) {
+              setState(() {
+                isTyping = typingStatus;
+                
+                // Update the placeholder message to show typing indicator
+                if (placeholderIndex != -1) {
+                  final currentMessage = _messages[placeholderIndex] as types.TextMessage;
+                  if (isTyping && completeResponse.isEmpty) {
+                    // Only show typing indicator if we haven't received text yet
+                    _messages[placeholderIndex] = currentMessage.copyWith(
+                      text: 'Typing...',  // Simple text indicator
+                      metadata: {'isTyping': true},  // Add metadata to identify typing messages
+                    );
+                  } else if (!isTyping && completeResponse.isEmpty) {
+                    // If typing stopped but we haven't received any text yet, show a placeholder
+                    _messages[placeholderIndex] = currentMessage.copyWith(
+                      text: '',
+                      metadata: {'isTyping': false},
+                    );
+                  }
+                }
+              });
+            }
+          } else if (chunk['type'] == 'text') {
+            // Handle text chunk
+            final String textChunk = chunk['text'];
+            completeResponse += textChunk;
+            
+            if (mounted) {
+              setState(() {
+                // Find the placeholder message and update its text
+                if (placeholderIndex != -1) {
+                  final currentMessage = _messages[placeholderIndex] as types.TextMessage;
+                  _messages[placeholderIndex] = currentMessage.copyWith(
+                    text: completeResponse,
+                  );
+                }
+              });
+            }
           }
         }
         
@@ -816,6 +935,14 @@ class ChatScreenState extends State<ChatScreen> {
               itemCount: _messages.length,
               itemBuilder: (context, index) {
                 final message = _messages[_messages.length - 1 - index];
+                
+                // Check if this is a typing indicator message
+                if (message is types.TextMessage && 
+                    message.metadata != null && 
+                    message.metadata!['isTyping'] == true) {
+                  return _buildTypingIndicator(message);
+                }
+                
                 return _buildMessageBubble(message);
               },
             ),

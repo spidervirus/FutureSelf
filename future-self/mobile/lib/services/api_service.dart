@@ -112,8 +112,8 @@ class ApiService {
     }
   }
   
-  // New method for streaming messages
-  Stream<String> streamMessage(String message, String userId) async* {
+  // New method for streaming messages with typing indicator support
+  Stream<Map<String, dynamic>> streamMessageWithTyping(String message, String userId) async* {
     final url = Uri.parse('$baseUrl/chat/stream');
     final request = http.Request('POST', url);
     
@@ -136,6 +136,7 @@ class ApiService {
               
               // Check if this is the completion message
               if (jsonData.containsKey('done')) {
+                yield {'type': 'done'};
                 break;
               }
               
@@ -144,9 +145,15 @@ class ApiService {
                 throw HttpException(jsonData['error']);
               }
               
+              // Check if this is a typing indicator
+              if (jsonData.containsKey('typing')) {
+                yield {'type': 'typing', 'isTyping': jsonData['typing']};
+                continue;
+              }
+              
               // Yield the text chunk
               if (jsonData.containsKey('text')) {
-                yield jsonData['text'];
+                yield {'type': 'text', 'text': jsonData['text']};
               }
             } catch (e) {
               debugPrint('Error parsing SSE data: $e');
@@ -160,6 +167,15 @@ class ApiService {
     } catch (e) {
       debugPrint('Error streaming message: $e');
       rethrow;
+    }
+  }
+  
+  // Keep the old method for backward compatibility
+  Stream<String> streamMessage(String message, String userId) async* {
+    await for (final chunk in streamMessageWithTyping(message, userId)) {
+      if (chunk['type'] == 'text' && chunk.containsKey('text')) {
+        yield chunk['text'];
+      }
     }
   }
 

@@ -729,6 +729,69 @@ def add_realistic_typos(text):
     
     return text
 
+def calculate_typing_delay(text, user_profile=None):
+    """Calculate realistic typing delays based on message length and complexity.
+    
+    Args:
+        text (str): The text to calculate typing delay for
+        user_profile (dict, optional): User profile with typing preferences
+        
+    Returns:
+        float: The delay in seconds before sending the response
+    """
+    # Base typing speed (characters per minute)
+    base_typing_speed = random.randint(180, 300)  # Different people type at different speeds
+    
+    # Adjust typing speed based on user profile if available
+    typing_speed = base_typing_speed
+    if user_profile:
+        # If user has a message_preference for quick responses, increase typing speed
+        message_preference = user_profile.get("message_preference", "")
+        if message_preference and "quick" in message_preference.lower():
+            typing_speed = random.randint(250, 350)  # Faster typing for quick responders
+        elif message_preference and "thoughtful" in message_preference.lower():
+            typing_speed = random.randint(150, 250)  # Slower typing for thoughtful responders
+    
+    # Calculate base delay (seconds per character)
+    base_delay = 60 / typing_speed
+    
+    # Add variability to typing speed
+    variability = random.uniform(0.8, 1.2)
+    
+    # Calculate thinking time based on message complexity
+    # More complex messages (longer, more punctuation, etc.) require more thinking time
+    complexity_factor = 1.0
+    
+    # Adjust for message length
+    if len(text) > 200:
+        complexity_factor *= 1.5
+    elif len(text) > 100:
+        complexity_factor *= 1.2
+    
+    # Adjust for question marks (questions need more thought)
+    question_count = text.count('?')
+    if question_count > 0:
+        complexity_factor *= (1 + (question_count * 0.1))
+    
+    # Calculate thinking time (longer for complex/longer messages)
+    thinking_time = min(2.0, len(text) * 0.01) * complexity_factor
+    
+    # Calculate total delay
+    total_delay = (base_delay * len(text) * variability) + thinking_time
+    
+    # Cap maximum delay to avoid excessive waiting
+    # For very short messages (like "ok"), use a very short delay
+    if len(text) < 5:
+        return random.uniform(0.5, 1.0)
+    
+    # For simple greetings, use a short delay
+    simple_greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
+    if text.lower().strip() in simple_greetings or any(text.lower().strip().startswith(greeting) for greeting in simple_greetings):
+        return random.uniform(0.8, 1.5)
+    
+    # Cap maximum delay to avoid excessive waiting
+    return min(total_delay, 5.0)
+
 # Create natural future self prompt with comprehensive onboarding data
 def create_future_self_prompt(user_message: str, user_profile: dict, conversation_context: list | None = None, weather_events_context: dict | None = None) -> str:
     if conversation_context is None:
@@ -1741,6 +1804,9 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
         complete_response = ""
         
         try:
+            # First, send a typing indicator to the client
+            yield f"data: {json.dumps({'typing': True})}\n\n"
+            
             # Set up the streaming request to Ollama
             response = requests.post(
                 ollama_url,
@@ -1752,6 +1818,9 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
             
             # Collect the complete response first
             complete_response = ""
+            accumulated_text = ""
+            last_chunk_time = time.time()
+            
             for line in response.iter_lines():
                 if line:
                     # Parse the JSON response from Ollama
@@ -1759,6 +1828,7 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
                     if "response" in chunk_data:
                         chunk_text = chunk_data["response"]
                         complete_response += chunk_text
+                        accumulated_text += chunk_text
                         
                         # If this is the final chunk, humanize the complete response
                         if chunk_data.get("done", False):
@@ -1772,14 +1842,38 @@ async def chat_stream_endpoint(request: ChatStreamRequest = Body(...)):
                             is_simple_greeting = any(user_message_lower == greeting or user_message_lower.startswith(greeting + ' ') or user_message_lower.endswith(' ' + greeting) for greeting in simple_greetings)
                             
                             if is_simple_greeting and humanized_response != complete_response:
+                                # For simple greetings with modified response, calculate typing delay
+                                typing_delay = calculate_typing_delay(humanized_response, user_data)
+                                await asyncio.sleep(typing_delay)
+                                
+                                # Send typing stopped indicator
+                                yield f"data: {json.dumps({'typing': False})}\n\n"
+                                
                                 # For simple greetings with modified response, send the entire humanized response
                                 yield f"data: {json.dumps({'text': humanized_response, 'done': True})}\n\n"
                                 # Update complete_response for database storage
                                 complete_response = humanized_response
                                 break
+                        
+                        # Apply realistic typing delays for normal streaming
+                        current_time = time.time()
+                        time_since_last_chunk = current_time - last_chunk_time
+                        
+                        # If we've accumulated enough text or enough time has passed, send a chunk
+                        # This simulates how humans type in bursts
+                        if len(accumulated_text) >= 10 or time_since_last_chunk >= 0.5:
+                            # Calculate a realistic typing delay based on the accumulated text
+                            typing_delay = calculate_typing_delay(accumulated_text, user_data) / 5  # Divide by 5 since we're streaming in chunks
                             
-                        # Format for SSE for normal streaming
-                        yield f"data: {json.dumps({'text': chunk_text})}\n\n"
+                            # Apply the delay
+                            await asyncio.sleep(typing_delay)
+                            
+                            # Format for SSE for normal streaming
+                            yield f"data: {json.dumps({'text': accumulated_text})}\n\n"
+                            
+                            # Reset accumulated text and update last chunk time
+                            accumulated_text = ""
+                            last_chunk_time = current_time
             
             # Save the complete response to the database
             try:
